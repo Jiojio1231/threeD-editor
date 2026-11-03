@@ -57,6 +57,16 @@
             </label>
           </div>
           <button class="apply-button" type="button" @click="applyRoomDimensions">应用空间尺寸 <span>↗</span></button>
+          <label class="wall-material-field floor-material-field">
+            <span>地板材质</span>
+            <select :value="floorMaterialType" aria-label="地板材质" @change="updateFloorMaterial">
+              <option value="concrete">混凝土</option>
+              <option value="epoxy">环氧树脂</option>
+              <option value="tile">瓷砖</option>
+              <option value="rubber">橡胶地板</option>
+            </select>
+          </label>
+          <p v-if="floorMaterialError" class="error-note">{{ floorMaterialError }}</p>
           <div class="dimension-hint"><span class="tiny-grid">▦</span> 修改尺寸后，机柜贴地，隔板保持在房间范围内</div>
         </section>
 
@@ -229,8 +239,22 @@
             <div v-for="(door, index) in selectedPartition.doors" :key="door.id" class="partition-door-item">
               <div class="door-item-heading"><strong>门 {{ index + 1 }}</strong><span>{{ door.doorOpen ? '已打开' : '已关闭' }}</span></div>
               <div class="door-actions">
-                <button class="annotation-add" type="button" @click="togglePartitionDoor(door.id)"><span>{{ door.doorOpen ? '↶' : '↗' }}</span> {{ door.doorOpen ? '关闭门扇' : '打开门扇' }}</button>
+                <button class="annotation-add" type="button" :disabled="selectedPartition.locked" @click="togglePartitionDoor(door.id)"><span>{{ door.doorOpen ? '↶' : '↗' }}</span> {{ door.doorOpen ? '关闭门扇' : '打开门扇' }}</button>
                 <button class="remove-door-button" type="button" :disabled="selectedPartition.locked" @click="removePartitionDoor(door.id)">移除</button>
+              </div>
+              <button
+                class="rotate-button door-reverse-button"
+                type="button"
+                :disabled="selectedPartition.locked"
+                :aria-pressed="Boolean(door.reverseInstall)"
+                @click="togglePartitionDoorInstallation(door.id)"
+              ><span>⇄</span> 反向安装 <small>{{ door.reverseInstall ? '已反向' : '标准安装' }}</small></button>
+              <div class="door-swing-control">
+                <span>开门方向 <small>从门的安装侧面向门洞判断</small></span>
+                <div class="door-swing-options" role="group" :aria-label="`门 ${index + 1} 开门方向`">
+                  <button type="button" :disabled="selectedPartition.locked" :aria-pressed="(door.hingeSide ?? 'left') === 'left'" @click="setPartitionDoorHingeSide(door.id, 'left')">左侧开门</button>
+                  <button type="button" :disabled="selectedPartition.locked" :aria-pressed="door.hingeSide === 'right'" @click="setPartitionDoorHingeSide(door.id, 'right')">右侧开门</button>
+                </div>
               </div>
               <label class="door-position-control">
                 <span class="door-position-label"><span>门洞位置 <small>距左端</small></span><strong>{{ (selectedPartition.length / 2 + door.doorOffset).toFixed(2) }} m</strong></span>
@@ -430,6 +454,8 @@ type RackItem = {
 
 type RoomWallSide = 'north' | 'south' | 'east' | 'west';
 type WallMaterialType = 'paint' | 'concrete' | 'steel' | 'brick';
+type FloorMaterialType = 'concrete' | 'epoxy' | 'tile' | 'rubber';
+type DoorHingeSide = 'left' | 'right';
 
 type LightingSettings = {
   ambientIntensity: number;
@@ -484,6 +510,8 @@ type PartitionDoor = {
   id: string;
   doorOpen: boolean;
   doorOffset: number;
+  reverseInstall?: boolean;
+  hingeSide?: DoorHingeSide;
 };
 
 type Annotation = {
@@ -532,6 +560,7 @@ type SceneDocument = {
   annotations: Array<Omit<Annotation, 'label'>>;
   lighting?: LightingSettings;
   ceilingLighting?: CeilingLightingSettings;
+  floorMaterial?: FloorMaterialType;
 };
 
 const viewport = ref<HTMLDivElement | null>(null);
@@ -550,6 +579,8 @@ const sceneView = reactive<SceneViewSettings>({
 });
 const room = reactive({ width: 12, length: 9, height: 4 });
 const roomDraft = reactive({ width: 12, length: 9, height: 4 });
+const defaultFloorMaterialType: FloorMaterialType = 'concrete';
+const floorMaterialType = ref<FloorMaterialType>(defaultFloorMaterialType);
 const defaultLightingSettings: LightingSettings = {
   ambientIntensity: 2.1,
   ambientColor: '#c9e5ff',
@@ -583,6 +614,7 @@ const annotations = ref<Annotation[]>([]);
 const selectedId = ref<string | null>(null);
 const annotationTitle = ref('');
 const annotationDescription = ref('');
+const floorMaterialError = ref('');
 const importError = ref('');
 const assetStatus = ref('CC0 模型加载中');
 const assetError = ref('');
@@ -632,6 +664,86 @@ function makeMaterial(color: number, roughness = 0.7, metalness = 0) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
+function createFloorPatternTexture(pattern: 'tile' | 'rubber') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('无法创建地板材质纹理。');
+
+  if (pattern === 'tile') {
+    context.fillStyle = '#929b9d';
+    context.fillRect(0, 0, 128, 128);
+    context.fillStyle = '#596467';
+    context.fillRect(0, 0, 3, 128);
+    context.fillRect(0, 0, 128, 3);
+    context.fillRect(125, 0, 3, 128);
+    context.fillRect(0, 125, 128, 3);
+    context.strokeStyle = 'rgba(240, 245, 245, 0.12)';
+    context.strokeRect(4, 4, 120, 120);
+  } else {
+    context.fillStyle = '#343b3d';
+    context.fillRect(0, 0, 128, 128);
+    for (let y = 8; y < 128; y += 16) {
+      for (let x = 8; x < 128; x += 16) {
+        context.beginPath();
+        context.arc(x, y, 3, 0, Math.PI * 2);
+        context.fillStyle = '#4b5355';
+        context.fill();
+        context.beginPath();
+        context.arc(x - 1, y - 1, 1.4, 0, Math.PI * 2);
+        context.fillStyle = '#252b2d';
+        context.fill();
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  const repeatSize = pattern === 'tile' ? 0.6 : 0.5;
+  texture.repeat.set(room.width / repeatSize, room.length / repeatSize);
+  return texture;
+}
+
+function createFloorMaterial(materialType: FloorMaterialType): THREE.MeshStandardMaterial {
+  if (materialType === 'epoxy') {
+    return new THREE.MeshPhysicalMaterial({
+      color: 0x9ca8aa,
+      roughness: 0.2,
+      metalness: 0.04,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.18,
+    });
+  }
+  if (materialType === 'tile') {
+    return new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: createFloorPatternTexture('tile'),
+      roughness: 0.5,
+      metalness: 0.01,
+    });
+  }
+  if (materialType === 'rubber') {
+    return new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: createFloorPatternTexture('rubber'),
+      roughness: 0.94,
+      metalness: 0,
+    });
+  }
+  return makeMaterial(0x737b7d, 0.96, 0.01);
+}
+
+function disposeFloorMaterialMap() {
+  const material = floorPlane?.material;
+  if (!material) return;
+  for (const surfaceMaterial of Array.isArray(material) ? material : [material]) {
+    if (surfaceMaterial instanceof THREE.MeshStandardMaterial) surfaceMaterial.map?.dispose();
+  }
+}
+
 function toggleLock(id: string) {
   const rack = racks.value.find((item) => item.id === id);
   const partition = partitions.value.find((item) => item.id === id);
@@ -668,6 +780,7 @@ function buildRoom() {
   if (!scene) return;
   if (roomGroup) {
     scene.remove(roomGroup);
+    disposeFloorMaterialMap();
     disposeGroup(roomGroup);
   }
   if (roomOutline) {
@@ -681,9 +794,8 @@ function buildRoom() {
   roomOutline = new THREE.Group();
   const halfW = room.width / 2;
   const halfL = room.length / 2;
-  const floorColor = makeMaterial(0x26313b, 0.84, 0.08);
 
-  floorPlane = new THREE.Mesh(new THREE.PlaneGeometry(room.width, room.length), floorColor);
+  floorPlane = new THREE.Mesh(new THREE.PlaneGeometry(room.width, room.length), createFloorMaterial(floorMaterialType.value));
   floorPlane.rotation.x = -Math.PI / 2;
   floorPlane.position.y = 0.01;
   floorPlane.receiveShadow = true;
@@ -1086,13 +1198,21 @@ function rebuildPartition(partition: PartitionItem) {
       }
 
       const hinge = new THREE.Group();
-      hinge.position.set(doorLeft + 0.035, 0, (opensIntoRoom ? 1 : -1) * (halfThickness + 0.025));
+      const mountSide = opensIntoRoom !== door.reverseInstall ? 1 : -1;
+      const hingeOnRight = door.hingeSide === 'right';
+      const hingeDirection = (hingeOnRight ? 1 : -1) * mountSide;
+      const leafDirection = -hingeDirection;
+      hinge.position.set(
+        hingeDirection > 0 ? doorRight - 0.035 : doorLeft + 0.035,
+        0,
+        mountSide * (halfThickness + 0.025),
+      );
       hinge.name = `Partition door hinge ${door.id}`;
       const leafWidth = openingWidth - 0.07;
-      makeBox(hinge, leafWidth, doorHeight - 0.035, 0.055, doorMaterial, leafWidth / 2, (doorHeight - 0.035) / 2, 0);
-      makeBox(hinge, 0.025, 0.12, 0.025, trimMaterial, leafWidth - 0.1, 1.02, 0.04);
-      makeBox(hinge, 0.018, doorHeight - 0.18, 0.018, markerMaterial, 0.08, (doorHeight - 0.18) / 2, 0.035);
-      hinge.rotation.y = door.doorOpen ? (opensIntoRoom ? -1 : 1) * Math.PI / 2 : 0;
+      makeBox(hinge, leafWidth, doorHeight - 0.035, 0.055, doorMaterial, leafDirection * leafWidth / 2, (doorHeight - 0.035) / 2, 0);
+      makeBox(hinge, 0.025, 0.12, 0.025, trimMaterial, leafDirection * (leafWidth - 0.1), 1.02, 0.04);
+      makeBox(hinge, 0.018, doorHeight - 0.18, 0.018, markerMaterial, leafDirection * 0.08, (doorHeight - 0.18) / 2, 0.035);
+      hinge.rotation.y = door.doorOpen ? (hingeOnRight ? 1 : -1) * Math.PI / 2 : 0;
       partition.group.add(hinge);
       wallCursor = doorRight;
     }
@@ -1233,8 +1353,31 @@ function updatePartitionMaterial(event: Event) {
   markSceneDirty();
 }
 
+function updateFloorMaterial(event: Event) {
+  const input = event.target as HTMLSelectElement;
+  if (!isFloorMaterialType(input.value) || !floorPlane) return;
+  floorMaterialError.value = '';
+  try {
+    const nextMaterial = createFloorMaterial(input.value);
+    const previousMaterial = floorPlane.material;
+    disposeFloorMaterialMap();
+    if (Array.isArray(previousMaterial)) previousMaterial.forEach((material) => material.dispose());
+    else previousMaterial.dispose();
+    floorPlane.material = nextMaterial;
+    floorMaterialType.value = input.value;
+    markSceneDirty();
+  } catch (error) {
+    console.error('Unable to apply the selected floor material.', error);
+    floorMaterialError.value = '无法切换地板材质，请重试。';
+  }
+}
+
 function isWallMaterialType(value: string): value is WallMaterialType {
   return value === 'paint' || value === 'concrete' || value === 'steel' || value === 'brick';
+}
+
+function isFloorMaterialType(value: unknown): value is FloorMaterialType {
+  return value === 'concrete' || value === 'epoxy' || value === 'tile' || value === 'rubber';
 }
 
 function updatePartitionColor(event: Event) {
@@ -1279,6 +1422,8 @@ function addPartitionDoor() {
     id: createId(),
     doorOpen: false,
     doorOffset: centerFromLeft - partition.length / 2,
+    reverseInstall: false,
+    hingeSide: 'left',
   });
   partition.doors.sort((a, b) => a.doorOffset - b.doorOffset);
   rebuildPartition(partition);
@@ -1288,8 +1433,26 @@ function addPartitionDoor() {
 function togglePartitionDoor(doorId: string) {
   const partition = selectedPartition.value;
   const door = partition?.doors.find((item) => item.id === doorId);
-  if (!partition || !door) return;
+  if (!partition || partition.locked || !door) return;
   door.doorOpen = !door.doorOpen;
+  rebuildPartition(partition);
+  markSceneDirty();
+}
+
+function togglePartitionDoorInstallation(doorId: string) {
+  const partition = selectedPartition.value;
+  const door = partition?.doors.find((item) => item.id === doorId);
+  if (!partition || partition.locked || !door) return;
+  door.reverseInstall = !door.reverseInstall;
+  rebuildPartition(partition);
+  markSceneDirty();
+}
+
+function setPartitionDoorHingeSide(doorId: string, hingeSide: DoorHingeSide) {
+  const partition = selectedPartition.value;
+  const door = partition?.doors.find((item) => item.id === doorId);
+  if (!partition || partition.locked || !door || (door.hingeSide ?? 'left') === hingeSide) return;
+  door.hingeSide = hingeSide;
   rebuildPartition(partition);
   markSceneDirty();
 }
@@ -1562,6 +1725,7 @@ function isSceneDocument(value: unknown): value is SceneDocument {
   if (!isRecord(value.room) || !Array.isArray(value.racks) || !Array.isArray(value.partitions) || !Array.isArray(value.annotations)) return false;
   if (value.lighting !== undefined && !isLightingSettings(value.lighting)) return false;
   if (value.ceilingLighting !== undefined && !isCeilingLightingSettings(value.ceilingLighting)) return false;
+  if (value.floorMaterial !== undefined && !isFloorMaterialType(value.floorMaterial)) return false;
   const { width, length, height } = value.room;
   if (!isFiniteInRange(width, 4, 40) || !isFiniteInRange(length, 4, 40) || !isFiniteInRange(height, 2.5, 12)) return false;
   if (!value.racks.every(isSceneRack) || !value.partitions.every(isScenePartition) || !value.annotations.every(isSceneAnnotation)) return false;
@@ -1630,8 +1794,14 @@ function isScenePartition(value: unknown): value is ScenePartition {
     return isRecord(door)
       && typeof door.id === 'string'
       && typeof door.doorOpen === 'boolean'
-      && isFiniteInRange(door.doorOffset, -40, 40);
+      && isFiniteInRange(door.doorOffset, -40, 40)
+      && (door.reverseInstall === undefined || typeof door.reverseInstall === 'boolean')
+      && (door.hingeSide === undefined || isDoorHingeSide(door.hingeSide));
   });
+}
+
+function isDoorHingeSide(value: unknown): value is DoorHingeSide {
+  return value === 'left' || value === 'right';
 }
 
 function isSceneAnnotation(value: unknown): value is Omit<Annotation, 'label'> {
@@ -1817,6 +1987,7 @@ async function serializeScene(): Promise<SceneDocument> {
     annotations: annotations.value.map(({ id, itemId, title, description }) => ({ id, itemId, title, description })),
     lighting: { ...lighting },
     ceilingLighting: { ...ceilingLighting },
+    floorMaterial: floorMaterialType.value,
   };
 }
 
@@ -1926,7 +2097,11 @@ async function loadSceneDocument(documentData: SceneDocument) {
   const loadedPartitions = documentData.partitions.map((partitionData) => reactive({
     ...partitionData,
     group: markRaw(new THREE.Group()),
-    doors: partitionData.doors.map((door) => ({ ...door })),
+    doors: partitionData.doors.map((door) => ({
+      ...door,
+      reverseInstall: door.reverseInstall ?? false,
+      hingeSide: door.hingeSide ?? 'left',
+    })),
   }));
   for (const item of [...racks.value, ...partitions.value]) {
     scene.remove(item.group);
@@ -1942,6 +2117,7 @@ async function loadSceneDocument(documentData: SceneDocument) {
   roomDraft.width = room.width;
   roomDraft.length = room.length;
   roomDraft.height = room.height;
+  floorMaterialType.value = documentData.floorMaterial ?? defaultFloorMaterialType;
   Object.assign(lighting, documentData.lighting ?? defaultLightingSettings);
   Object.assign(ceilingLighting, { ...defaultCeilingLightingSettings, ...documentData.ceilingLighting });
   applyLightingSettings();
@@ -2554,6 +2730,14 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .door-item-heading span { color: #72838a; }
 .door-actions { display: flex; align-items: center; gap: 7px; }
 .door-actions .annotation-add { flex: 1; }
+.door-reverse-button { margin-top: 8px; }
+.door-swing-control { margin-top: 10px; }
+.door-swing-control > span { display: flex; align-items: center; justify-content: space-between; color: #a7b5b9; font-size: 8px; }
+.door-swing-control > span small { color: #71838a; font-size: 7px; }
+.door-swing-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 6px; }
+.door-swing-options button { min-width: 0; height: 29px; border: 1px solid rgba(172,199,211,.11); border-radius: 3px; background: rgba(255,255,255,.02); color: #899a9f; font-size: 8px; cursor: pointer; }
+.door-swing-options button[aria-pressed="true"] { border-color: rgba(107,190,185,.38); background: rgba(86,160,157,.14); color: #a2d9d4; }
+.door-swing-options button:disabled { opacity: .48; cursor: not-allowed; }
 .remove-door-button { height: 31px; padding: 0 8px; background: transparent; border: 1px solid rgba(219,116,105,.17); border-radius: 3px; color: #c5877f; font-size: 8px; cursor: pointer; }
 .remove-door-button:hover { border-color: rgba(219,116,105,.4); }
 .remove-door-button:disabled { opacity: .45; cursor: not-allowed; }
