@@ -283,6 +283,56 @@
           </div>
         </template>
 
+        <details class="lighting-panel">
+          <summary><span>场景光照</span><small>{{ lighting.keyEnabled ? '主光开启' : '主光关闭' }}</small></summary>
+          <div class="lighting-controls">
+            <label class="lighting-range">
+              <span>环境光强度 <strong>{{ lighting.ambientIntensity.toFixed(1) }}</strong></span>
+              <input type="range" min="0" max="4" step="0.1" :value="lighting.ambientIntensity" aria-label="环境光强度" @input="updateLightingNumber('ambientIntensity', $event)">
+            </label>
+            <label class="lighting-color">
+              <span>环境光颜色</span>
+              <input type="color" :value="lighting.ambientColor" aria-label="环境光颜色" @input="updateLightingColor('ambientColor', $event)">
+            </label>
+
+            <div class="lighting-subheading">主光源</div>
+            <label class="lighting-toggle"><input type="checkbox" :checked="lighting.keyEnabled" @change="updateLightingToggle('keyEnabled', $event)"><span>启用主光</span></label>
+            <label class="lighting-range">
+              <span>强度 <strong>{{ lighting.keyIntensity.toFixed(1) }}</strong></span>
+              <input type="range" min="0" max="5" step="0.1" :value="lighting.keyIntensity" :disabled="!lighting.keyEnabled" aria-label="主光源强度" @input="updateLightingNumber('keyIntensity', $event)">
+            </label>
+            <label class="lighting-color">
+              <span>颜色</span>
+              <input type="color" :value="lighting.keyColor" :disabled="!lighting.keyEnabled" aria-label="主光源颜色" @input="updateLightingColor('keyColor', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>方位角 <strong>{{ lighting.keyAzimuth }}°</strong></span>
+              <input type="range" min="-180" max="180" step="1" :value="lighting.keyAzimuth" :disabled="!lighting.keyEnabled" aria-label="主光源方位角" @input="updateLightingNumber('keyAzimuth', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>高度角 <strong>{{ lighting.keyElevation }}°</strong></span>
+              <input type="range" min="5" max="85" step="1" :value="lighting.keyElevation" :disabled="!lighting.keyEnabled" aria-label="主光源高度角" @input="updateLightingNumber('keyElevation', $event)">
+            </label>
+
+            <div class="lighting-subheading">补光</div>
+            <label class="lighting-toggle"><input type="checkbox" :checked="lighting.fillEnabled" @change="updateLightingToggle('fillEnabled', $event)"><span>启用补光</span></label>
+            <label class="lighting-range">
+              <span>强度 <strong>{{ lighting.fillIntensity.toFixed(1) }}</strong></span>
+              <input type="range" min="0" max="3" step="0.1" :value="lighting.fillIntensity" :disabled="!lighting.fillEnabled" aria-label="补光强度" @input="updateLightingNumber('fillIntensity', $event)">
+            </label>
+            <label class="lighting-color">
+              <span>颜色</span>
+              <input type="color" :value="lighting.fillColor" :disabled="!lighting.fillEnabled" aria-label="补光颜色" @input="updateLightingColor('fillColor', $event)">
+            </label>
+
+            <label class="lighting-toggle"><input type="checkbox" :checked="lighting.shadowsEnabled" @change="updateLightingToggle('shadowsEnabled', $event)"><span>启用阴影</span></label>
+            <label class="lighting-range">
+              <span>曝光度 <strong>{{ lighting.exposure.toFixed(2) }}</strong></span>
+              <input type="range" min="0.6" max="1.6" step="0.05" :value="lighting.exposure" aria-label="场景曝光度" @input="updateLightingNumber('exposure', $event)">
+            </label>
+          </div>
+        </details>
+
         <section class="annotation-section">
           <div class="annotation-heading">
             <div class="section-title"><span>空间标注</span><span class="count-pill">{{ annotations.length.toString().padStart(2, '0') }}</span></div>
@@ -334,6 +384,21 @@ type RackItem = {
 
 type RoomWallSide = 'north' | 'south' | 'east' | 'west';
 type WallMaterialType = 'paint' | 'concrete' | 'steel' | 'brick';
+
+type LightingSettings = {
+  ambientIntensity: number;
+  ambientColor: string;
+  keyEnabled: boolean;
+  keyIntensity: number;
+  keyColor: string;
+  keyAzimuth: number;
+  keyElevation: number;
+  fillEnabled: boolean;
+  fillIntensity: number;
+  fillColor: string;
+  shadowsEnabled: boolean;
+  exposure: number;
+};
 
 type PartitionItem = {
   id: string;
@@ -402,6 +467,7 @@ type SceneDocument = {
   racks: SceneRack[];
   partitions: ScenePartition[];
   annotations: Array<Omit<Annotation, 'label'>>;
+  lighting?: LightingSettings;
 };
 
 const viewport = ref<HTMLDivElement | null>(null);
@@ -409,6 +475,21 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const sceneFileInput = ref<HTMLInputElement | null>(null);
 const room = reactive({ width: 12, length: 9, height: 4 });
 const roomDraft = reactive({ width: 12, length: 9, height: 4 });
+const defaultLightingSettings: LightingSettings = {
+  ambientIntensity: 2.1,
+  ambientColor: '#c9e5ff',
+  keyEnabled: true,
+  keyIntensity: 3.2,
+  keyColor: '#e4f2ff',
+  keyAzimuth: 131,
+  keyElevation: 55,
+  fillEnabled: true,
+  fillIntensity: 1.25,
+  fillColor: '#61b9cf',
+  shadowsEnabled: true,
+  exposure: 1.15,
+};
+const lighting = reactive({ ...defaultLightingSettings });
 const racks = ref<RackItem[]>([]);
 const partitions = ref<PartitionItem[]>([]);
 const annotations = ref<Annotation[]>([]);
@@ -432,6 +513,9 @@ let controls: OrbitControls;
 let roomGroup: THREE.Group;
 let roomOutline: THREE.Group;
 let floorPlane: THREE.Mesh;
+let hemisphereLight: THREE.HemisphereLight | null = null;
+let keyLight: THREE.DirectionalLight | null = null;
+let fillLight: THREE.DirectionalLight | null = null;
 let freeRackPrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
@@ -1251,6 +1335,7 @@ function isRoomWallSide(value: unknown): value is RoomWallSide {
 function isSceneDocument(value: unknown): value is SceneDocument {
   if (!isRecord(value) || value.format !== 'nexus-space-studio' || value.version !== 1) return false;
   if (!isRecord(value.room) || !Array.isArray(value.racks) || !Array.isArray(value.partitions) || !Array.isArray(value.annotations)) return false;
+  if (value.lighting !== undefined && !isLightingSettings(value.lighting)) return false;
   const { width, length, height } = value.room;
   if (!isFiniteInRange(width, 4, 40) || !isFiniteInRange(length, 4, 40) || !isFiniteInRange(height, 2.5, 12)) return false;
   if (!value.racks.every(isSceneRack) || !value.partitions.every(isScenePartition) || !value.annotations.every(isSceneAnnotation)) return false;
@@ -1262,6 +1347,22 @@ function isSceneDocument(value: unknown): value is SceneDocument {
   const annotationIds = value.annotations.map((annotation) => annotation.id);
   if (new Set(annotationIds).size !== annotationIds.length) return false;
   return value.annotations.every((annotation) => rackIds.includes(annotation.itemId));
+}
+
+function isLightingSettings(value: unknown): value is LightingSettings {
+  return isRecord(value)
+    && isFiniteInRange(value.ambientIntensity, 0, 4)
+    && typeof value.ambientColor === 'string' && /^#[\da-f]{6}$/i.test(value.ambientColor)
+    && typeof value.keyEnabled === 'boolean'
+    && isFiniteInRange(value.keyIntensity, 0, 5)
+    && typeof value.keyColor === 'string' && /^#[\da-f]{6}$/i.test(value.keyColor)
+    && isFiniteInRange(value.keyAzimuth, -180, 180)
+    && isFiniteInRange(value.keyElevation, 5, 85)
+    && typeof value.fillEnabled === 'boolean'
+    && isFiniteInRange(value.fillIntensity, 0, 3)
+    && typeof value.fillColor === 'string' && /^#[\da-f]{6}$/i.test(value.fillColor)
+    && typeof value.shadowsEnabled === 'boolean'
+    && isFiniteInRange(value.exposure, 0.6, 1.6);
 }
 
 function isSceneRack(value: unknown): value is SceneRack {
@@ -1300,6 +1401,64 @@ function isSceneAnnotation(value: unknown): value is Omit<Annotation, 'label'> {
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+type LightingNumericKey = 'ambientIntensity' | 'keyIntensity' | 'keyAzimuth' | 'keyElevation' | 'fillIntensity' | 'exposure';
+type LightingColorKey = 'ambientColor' | 'keyColor' | 'fillColor';
+type LightingToggleKey = 'keyEnabled' | 'fillEnabled' | 'shadowsEnabled';
+
+const lightingRanges: Record<LightingNumericKey, { min: number; max: number }> = {
+  ambientIntensity: { min: 0, max: 4 },
+  keyIntensity: { min: 0, max: 5 },
+  keyAzimuth: { min: -180, max: 180 },
+  keyElevation: { min: 5, max: 85 },
+  fillIntensity: { min: 0, max: 3 },
+  exposure: { min: 0.6, max: 1.6 },
+};
+
+function updateLightingNumber(key: LightingNumericKey, event: Event) {
+  const input = event.currentTarget as HTMLInputElement;
+  const { min, max } = lightingRanges[key];
+  if (!Number.isFinite(input.valueAsNumber)) return;
+  lighting[key] = THREE.MathUtils.clamp(input.valueAsNumber, min, max);
+  applyLightingSettings();
+  markSceneDirty();
+}
+
+function updateLightingColor(key: LightingColorKey, event: Event) {
+  lighting[key] = (event.currentTarget as HTMLInputElement).value;
+  applyLightingSettings();
+  markSceneDirty();
+}
+
+function updateLightingToggle(key: LightingToggleKey, event: Event) {
+  lighting[key] = (event.currentTarget as HTMLInputElement).checked;
+  applyLightingSettings();
+  markSceneDirty();
+}
+
+function applyLightingSettings() {
+  if (!hemisphereLight || !keyLight || !fillLight || !renderer) return;
+  hemisphereLight.color.set(lighting.ambientColor);
+  hemisphereLight.intensity = lighting.ambientIntensity;
+  keyLight.visible = lighting.keyEnabled;
+  keyLight.color.set(lighting.keyColor);
+  keyLight.intensity = lighting.keyIntensity;
+  const azimuth = THREE.MathUtils.degToRad(lighting.keyAzimuth);
+  const elevation = THREE.MathUtils.degToRad(lighting.keyElevation);
+  const horizontalDistance = 20 * Math.cos(elevation);
+  keyLight.position.set(
+    horizontalDistance * Math.cos(azimuth),
+    20 * Math.sin(elevation),
+    horizontalDistance * Math.sin(azimuth),
+  );
+  keyLight.castShadow = lighting.shadowsEnabled;
+  fillLight.visible = lighting.fillEnabled;
+  fillLight.color.set(lighting.fillColor);
+  fillLight.intensity = lighting.fillIntensity;
+  renderer.shadowMap.enabled = lighting.shadowsEnabled;
+  renderer.shadowMap.needsUpdate = true;
+  renderer.toneMappingExposure = lighting.exposure;
 }
 
 async function serializeScene(): Promise<SceneDocument> {
@@ -1348,6 +1507,7 @@ async function serializeScene(): Promise<SceneDocument> {
       doors: partition.doors.map((door) => ({ ...door })),
     })),
     annotations: annotations.value.map(({ id, itemId, title, description }) => ({ id, itemId, title, description })),
+    lighting: { ...lighting },
   };
 }
 
@@ -1473,6 +1633,8 @@ async function loadSceneDocument(documentData: SceneDocument) {
   roomDraft.width = room.width;
   roomDraft.length = room.length;
   roomDraft.height = room.height;
+  Object.assign(lighting, documentData.lighting ?? defaultLightingSettings);
+  applyLightingSettings();
   buildRoom();
 
   partitions.value = loadedPartitions;
@@ -1650,9 +1812,9 @@ onMounted(async () => {
   controls.maxPolarAngle = Math.PI * 0.49;
   controls.target.set(0, 1.2, 0);
 
-  scene.add(new THREE.HemisphereLight(0xc9e5ff, 0x38414a, 2.1));
-  const keyLight = new THREE.DirectionalLight(0xe4f2ff, 3.2);
-  keyLight.position.set(-7, 15, 8);
+  hemisphereLight = new THREE.HemisphereLight(0xc9e5ff, 0x38414a, 2.1);
+  scene.add(hemisphereLight);
+  keyLight = new THREE.DirectionalLight(0xe4f2ff, 3.2);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
   keyLight.shadow.camera.left = -18;
@@ -1660,9 +1822,10 @@ onMounted(async () => {
   keyLight.shadow.camera.top = 18;
   keyLight.shadow.camera.bottom = -18;
   scene.add(keyLight);
-  const fillLight = new THREE.DirectionalLight(0x61b9cf, 1.25);
+  fillLight = new THREE.DirectionalLight(0x61b9cf, 1.25);
   fillLight.position.set(10, 8, -8);
   scene.add(fillLight);
+  applyLightingSettings();
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(200, 200),
     new THREE.MeshStandardMaterial({ color: 0x111a22, roughness: 0.94 }),
@@ -1987,6 +2150,24 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .quick-actions strong { color: #d5e0e1; font-size: 9px; font-weight: 550; }
 .quick-actions small { color: #77868b; font-size: 8px; }
 .quick-actions button > b { margin-left: auto; color: #758a8e; font-size: 14px; font-weight: 400; }
+.lighting-panel { margin: 0 18px; border-bottom: 1px solid var(--line); }
+.lighting-panel > summary { min-height: 43px; display: flex; align-items: center; justify-content: space-between; color: #d3dfdf; font-size: 10px; cursor: pointer; list-style: none; }
+.lighting-panel > summary::-webkit-details-marker { display: none; }
+.lighting-panel > summary::after { content: "+"; color: #78c5bf; font-size: 15px; }
+.lighting-panel[open] > summary::after { content: "−"; }
+.lighting-panel > summary small { margin-left: auto; margin-right: 9px; color: #778b90; font-size: 8px; }
+.lighting-controls { display: flex; flex-direction: column; gap: 9px; padding: 1px 0 14px; }
+.lighting-subheading { padding-top: 5px; border-top: 1px solid rgba(179,205,220,.07); color: #7d999a; font-size: 8px; letter-spacing: .5px; text-transform: uppercase; }
+.lighting-range { display: flex; flex-direction: column; gap: 5px; color: #94a3a8; font-size: 8px; }
+.lighting-range > span { display: flex; justify-content: space-between; }
+.lighting-range strong { color: #a9bfbe; font-weight: 500; }
+.lighting-range input { width: 100%; height: 12px; margin: 0; accent-color: #75c4c0; }
+.lighting-range input:disabled { opacity: .4; }
+.lighting-color { display: flex; align-items: center; justify-content: space-between; color: #94a3a8; font-size: 8px; }
+.lighting-color input { width: 31px; height: 19px; padding: 1px; border: 1px solid rgba(172,199,211,.2); border-radius: 3px; background: #11191f; cursor: pointer; }
+.lighting-color input:disabled { opacity: .4; cursor: not-allowed; }
+.lighting-toggle { display: flex; align-items: center; gap: 7px; color: #94a3a8; font-size: 8px; cursor: pointer; }
+.lighting-toggle input { margin: 0; accent-color: #75c4c0; }
 .annotation-section { padding: 17px 18px 16px; }
 .annotation-heading { display: flex; align-items: center; justify-content: space-between; }
 .annotation-heading .section-title { margin-bottom: 12px; }
