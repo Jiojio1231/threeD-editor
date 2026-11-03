@@ -15,7 +15,7 @@
           <button type="button" :class="{ active: !isPreviewMode }" :aria-pressed="!isPreviewMode" @click="setEditMode">编辑</button>
           <button type="button" :class="{ active: isPreviewMode }" :aria-pressed="isPreviewMode" @click="setPreviewMode">预览</button>
         </div>
-        <button class="top-button subtle" type="button" @click="resetCamera">
+        <button class="top-button subtle" type="button" @click="resetCamera()">
           <span class="button-icon">⌖</span> 重置视角
         </button>
         <button v-if="!isPreviewMode" class="top-button primary" type="button" @click="addRack">
@@ -149,7 +149,7 @@
           <div class="breadcrumbs"><span>项目</span><i>/</i><strong>机房空间</strong>          <span class="view-chip">{{ isPreviewMode ? '预览模式' : '编辑模式' }}</span></div>
           <div class="view-tools">
             <span class="view-tool-label"><i></i> 正交辅助网格</span>
-            <button type="button" class="icon-button" title="重置视角" aria-label="重置视角" @click="resetCamera">⟳</button>
+            <button type="button" class="icon-button" title="重置视角" aria-label="重置视角" @click="resetCamera()">⟳</button>
           </div>
         </div>
         <div ref="viewport" class="viewport">
@@ -286,6 +286,30 @@
             <button type="button" @click="triggerImport"><span class="quick-icon upload">↑</span><span><strong>导入自定义模型</strong><small>支持 GLB 格式文件</small></span><b>↗</b></button>
           </div>
         </template>
+
+        <details class="lighting-panel">
+          <summary><span>场景视角</span><small>初始视角</small></summary>
+          <div class="lighting-controls">
+            <label class="lighting-range">
+              <span>缩放距离 <strong>{{ sceneView.distance.toFixed(1) }} m</strong></span>
+              <input type="range" min="5" max="42" step="0.1" :value="sceneView.distance" aria-label="场景缩放距离" @input="updateSceneViewNumber('distance', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>水平角度 <strong>{{ sceneView.azimuth }}°</strong></span>
+              <input type="range" min="-180" max="180" step="1" :value="sceneView.azimuth" aria-label="相机水平角度" @input="updateSceneViewNumber('azimuth', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>俯仰角 <strong>{{ sceneView.elevation }}°</strong></span>
+              <input type="range" min="1" max="88" step="1" :value="sceneView.elevation" aria-label="相机俯仰角" @input="updateSceneViewNumber('elevation', $event)">
+            </label>
+            <div class="camera-view-actions">
+              <button class="annotation-add" type="button" @click="resetCamera()">恢复默认视角</button>
+              <button class="annotation-add" type="button" @click="applyCameraSettings">应用设置</button>
+            </div>
+            <p class="lighting-help">{{ cameraConfigStatus }}。应用后的配置会作为场景加载和重置视角的默认值；普通场景保存不会覆盖它。</p>
+            <p v-if="cameraConfigError" class="error-note">{{ cameraConfigError }}</p>
+          </div>
+        </details>
 
         <details class="lighting-panel">
           <summary><span>场景光照</span><small>{{ lighting.keyEnabled ? '主光开启' : '主光关闭' }}</small></summary>
@@ -430,6 +454,15 @@ type CeilingLightingSettings = {
   colorTemperature: number;
 };
 
+type SceneViewSettings = {
+  distance: number;
+  azimuth: number;
+  elevation: number;
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+};
+
 type PartitionItem = {
   id: string;
   name: string;
@@ -505,6 +538,16 @@ const viewport = ref<HTMLDivElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const sceneFileInput = ref<HTMLInputElement | null>(null);
 const isPreviewMode = ref(false);
+const cameraConfigStatus = ref('尚未应用');
+const cameraConfigError = ref('');
+const sceneView = reactive<SceneViewSettings>({
+  distance: 25.4,
+  azimuth: 39.8,
+  elevation: 22.7,
+  targetX: 0,
+  targetY: 1.2,
+  targetZ: 0,
+});
 const room = reactive({ width: 12, length: 9, height: 4 });
 const roomDraft = reactive({ width: 12, length: 9, height: 4 });
 const defaultLightingSettings: LightingSettings = {
@@ -569,12 +612,15 @@ let resizeObserver: ResizeObserver;
 let animationFrame = 0;
 let activeDrag: { kind: 'rack' | 'partition'; id: string } | null = null;
 let activePointerId: number | null = null;
+let applyingSceneView = false;
+let appliedCameraConfig: SceneViewSettings | null = null;
 let floorPlaneForDrag: THREE.Plane;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const gltfLoader = new GLTFLoader();
 const gltfExporter = new GLTFExporter();
 const localSceneStorageKey = 'nexus-space-studio:scene:v1';
+const cameraConfigStorageKey = 'nexus-space-studio:camera-view:v1';
 const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalness: number }> = {
   paint: { roughness: 0.72, metalness: 0.12 },
   concrete: { roughness: 0.94, metalness: 0.02 },
@@ -1554,6 +1600,16 @@ function isCeilingLightingSettings(value: unknown): value is CeilingLightingSett
     && isFiniteInRange(value.colorTemperature, 3000, 6500);
 }
 
+function isSceneViewSettings(value: unknown): value is SceneViewSettings {
+  return isRecord(value)
+    && isFiniteInRange(value.distance, 5, 42)
+    && isFiniteInRange(value.azimuth, -180, 180)
+    && isFiniteInRange(value.elevation, 1, 88)
+    && isFiniteInRange(value.targetX, -100, 100)
+    && isFiniteInRange(value.targetY, -100, 100)
+    && isFiniteInRange(value.targetZ, -100, 100);
+}
+
 function isSceneRack(value: unknown): value is SceneRack {
   if (!isRecord(value)) return false;
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
@@ -1596,6 +1652,21 @@ type LightingNumericKey = 'ambientIntensity' | 'keyIntensity' | 'keyAzimuth' | '
 type LightingColorKey = 'ambientColor' | 'keyColor' | 'fillColor';
 type LightingToggleKey = 'keyEnabled' | 'fillEnabled' | 'shadowsEnabled';
 type CeilingLightingNumericKey = 'spacing' | 'intensity' | 'colorTemperature';
+type SceneViewNumericKey = 'distance' | 'azimuth' | 'elevation';
+
+const sceneViewRanges: Record<SceneViewNumericKey, { min: number; max: number }> = {
+  distance: { min: 5, max: 42 },
+  azimuth: { min: -180, max: 180 },
+  elevation: { min: 1, max: 88 },
+};
+
+function updateSceneViewNumber(key: SceneViewNumericKey, event: Event) {
+  const input = event.currentTarget as HTMLInputElement;
+  if (!Number.isFinite(input.valueAsNumber)) return;
+  const value = key === 'distance' ? Math.round(input.valueAsNumber * 10) / 10 : Math.round(input.valueAsNumber);
+  sceneView[key] = THREE.MathUtils.clamp(value, sceneViewRanges[key].min, sceneViewRanges[key].max);
+  applySceneView();
+}
 
 const lightingRanges: Record<LightingNumericKey, { min: number; max: number }> = {
   ambientIntensity: { min: 0, max: 4 },
@@ -1891,6 +1962,7 @@ async function loadSceneDocument(documentData: SceneDocument) {
     const rack = racks.value.find((item) => item.id === annotation.itemId);
     if (rack) attachAnnotation(rack, annotation.id, annotation.title, annotation.description);
   }
+  restoreInitialCameraView();
   selectedId.value = null;
 }
 
@@ -2007,11 +2079,113 @@ function onPointerUp() {
   controls.enabled = true;
 }
 
+function updateCameraConfigStatus() {
+  if (!appliedCameraConfig) {
+    cameraConfigStatus.value = '尚未应用';
+    return;
+  }
+  const matchesAppliedConfig = (Object.keys(appliedCameraConfig) as (keyof SceneViewSettings)[])
+    .every((key) => sceneView[key] === appliedCameraConfig?.[key]);
+  cameraConfigStatus.value = matchesAppliedConfig ? '已应用' : '有未应用的调整';
+}
+
+function syncSceneViewFromCamera() {
+  if (!camera || !controls) return;
+  const offset = camera.position.clone().sub(controls.target);
+  const distance = offset.length();
+  const azimuth = THREE.MathUtils.radToDeg(Math.atan2(offset.x, offset.z));
+  const elevation = THREE.MathUtils.radToDeg(Math.atan2(offset.y, Math.hypot(offset.x, offset.z)));
+  const nextView: SceneViewSettings = {
+    distance: Number(distance.toFixed(1)),
+    azimuth: Math.round(azimuth),
+    elevation: Math.round(elevation),
+    targetX: Number(THREE.MathUtils.clamp(controls.target.x, -100, 100).toFixed(1)),
+    targetY: Number(THREE.MathUtils.clamp(controls.target.y, -100, 100).toFixed(1)),
+    targetZ: Number(THREE.MathUtils.clamp(controls.target.z, -100, 100).toFixed(1)),
+  };
+  const changed = Object.keys(nextView).some((key) => {
+    const viewKey = key as keyof SceneViewSettings;
+    return sceneView[viewKey] !== nextView[viewKey];
+  });
+  if (changed) Object.assign(sceneView, nextView);
+  if (!applyingSceneView) updateCameraConfigStatus();
+}
+
+function applySceneView() {
+  if (!camera || !controls) return;
+  applyingSceneView = true;
+  const azimuth = THREE.MathUtils.degToRad(sceneView.azimuth);
+  const elevation = THREE.MathUtils.degToRad(sceneView.elevation);
+  const horizontalDistance = sceneView.distance * Math.cos(elevation);
+  controls.target.set(sceneView.targetX, sceneView.targetY, sceneView.targetZ);
+  camera.position.set(
+    sceneView.targetX + horizontalDistance * Math.sin(azimuth),
+    sceneView.targetY + sceneView.distance * Math.sin(elevation),
+    sceneView.targetZ + horizontalDistance * Math.cos(azimuth),
+  );
+  controls.update();
+  syncSceneViewFromCamera();
+  applyingSceneView = false;
+  updateCameraConfigStatus();
+}
+
 function resetCamera() {
   if (!camera || !controls) return;
+  if (appliedCameraConfig) {
+    Object.assign(sceneView, appliedCameraConfig);
+    applySceneView();
+    return;
+  }
+  applyingSceneView = true;
   camera.position.set(room.width * 1.25, room.height * 2.3, room.length * 1.45);
   controls.target.set(0, room.height * 0.3, 0);
   controls.update();
+  syncSceneViewFromCamera();
+  applyingSceneView = false;
+  updateCameraConfigStatus();
+}
+
+function applyCameraSettings() {
+  cameraConfigError.value = '';
+  syncSceneViewFromCamera();
+  try {
+    const config = { ...sceneView };
+    localStorage.setItem(cameraConfigStorageKey, JSON.stringify(config));
+    appliedCameraConfig = config;
+    cameraConfigStatus.value = '已应用';
+  } catch (error) {
+    console.error('Unable to save the initial camera view configuration.', error);
+    cameraConfigStatus.value = '应用失败';
+    cameraConfigError.value = '保存初始视角配置失败，请检查浏览器存储权限。';
+  }
+}
+
+function restoreInitialCameraView() {
+  cameraConfigError.value = '';
+  try {
+    const savedConfig = localStorage.getItem(cameraConfigStorageKey);
+    if (!savedConfig) {
+      appliedCameraConfig = null;
+      resetCamera();
+      return;
+    }
+    const parsed: unknown = JSON.parse(savedConfig);
+    if (!isSceneViewSettings(parsed)) throw new Error('已保存的初始视角配置格式无效。');
+    appliedCameraConfig = { ...parsed };
+    Object.assign(sceneView, parsed);
+    applySceneView();
+    cameraConfigStatus.value = '已应用';
+  } catch (error) {
+    console.error('Unable to restore the initial camera view configuration.', error);
+    appliedCameraConfig = null;
+    cameraConfigError.value = error instanceof Error ? error.message : '读取初始视角配置失败。';
+    resetCamera();
+    cameraConfigStatus.value = '配置无效，已恢复默认视角';
+  }
+}
+
+function handleCameraChange() {
+  syncSceneViewFromCamera();
 }
 
 function resizeViewport() {
@@ -2064,6 +2238,9 @@ onMounted(async () => {
   controls.maxDistance = 42;
   controls.maxPolarAngle = Math.PI * 0.49;
   controls.target.set(0, 1.2, 0);
+  syncSceneViewFromCamera();
+  controls.addEventListener('change', handleCameraChange);
+  restoreInitialCameraView();
 
   hemisphereLight = new THREE.HemisphereLight(0xc9e5ff, 0x38414a, 2.1);
   scene.add(hemisphereLight);
@@ -2134,6 +2311,7 @@ onMounted(async () => {
       rack.x = rack.group.position.x;
       rack.z = rack.group.position.z;
     }
+    restoreInitialCameraView();
   }
   selectedId.value = null;
 });
@@ -2155,6 +2333,7 @@ onBeforeUnmount(() => {
     renderer.domElement.removeEventListener('pointercancel', onPointerUp);
     renderer.dispose();
   }
+  controls?.removeEventListener('change', handleCameraChange);
   controls?.dispose();
 });
 </script>
@@ -2433,6 +2612,8 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .lighting-toggle { display: flex; align-items: center; gap: 7px; color: #94a3a8; font-size: 8px; cursor: pointer; }
 .lighting-toggle input { margin: 0; accent-color: #75c4c0; }
 .lighting-help { margin: -2px 0 0; color: #71838a; font-size: 8px; line-height: 1.5; }
+.camera-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.camera-view-actions .annotation-add { padding: 0 3px; font-size: 8px; white-space: nowrap; }
 .annotation-section { padding: 17px 18px 16px; }
 .annotation-heading { display: flex; align-items: center; justify-content: space-between; }
 .annotation-heading .section-title { margin-bottom: 12px; }
