@@ -11,20 +11,24 @@
         <span class="saved-state">{{ saveStatus }}</span>
       </div>
       <div class="top-actions">
+        <div class="mode-switch" role="group" aria-label="工作模式">
+          <button type="button" :class="{ active: !isPreviewMode }" :aria-pressed="!isPreviewMode" @click="setEditMode">编辑</button>
+          <button type="button" :class="{ active: isPreviewMode }" :aria-pressed="isPreviewMode" @click="setPreviewMode">预览</button>
+        </div>
         <button class="top-button subtle" type="button" @click="resetCamera">
           <span class="button-icon">⌖</span> 重置视角
         </button>
-        <button class="top-button primary" type="button" @click="addRack">
+        <button v-if="!isPreviewMode" class="top-button primary" type="button" @click="addRack">
           <span class="plus">＋</span> 添加机柜
         </button>
-        <button class="top-button partition-top-button" type="button" @click="addPartition">
+        <button v-if="!isPreviewMode" class="top-button partition-top-button" type="button" @click="addPartition">
           <span class="plus">＋</span> 添加隔板
         </button>
       </div>
     </header>
 
-    <div class="workspace">
-      <aside class="sidebar left-sidebar">
+    <div class="workspace" :class="{ 'preview-workspace': isPreviewMode }">
+      <aside v-if="!isPreviewMode" class="sidebar left-sidebar">
         <div class="sidebar-heading">
           <div>
             <div class="eyebrow">PROJECT SETUP</div>
@@ -142,7 +146,7 @@
 
       <main class="viewport-column">
         <div class="viewport-toolbar">
-          <div class="breadcrumbs"><span>项目</span><i>/</i><strong>机房空间</strong><span class="view-chip">3D 视图</span></div>
+          <div class="breadcrumbs"><span>项目</span><i>/</i><strong>机房空间</strong>          <span class="view-chip">{{ isPreviewMode ? '预览模式' : '编辑模式' }}</span></div>
           <div class="view-tools">
             <span class="view-tool-label"><i></i> 正交辅助网格</span>
             <button type="button" class="icon-button" title="重置视角" aria-label="重置视角" @click="resetCamera">⟳</button>
@@ -153,7 +157,7 @@
           <div class="viewport-caption">
             <span class="caption-kicker">SPATIAL VIEW / 01</span>
             <strong>机房空间预览</strong>
-            <span>先选择对象，再拖动已选对象移动 · 滚轮缩放 · 右键旋转</span>
+            <span>{{ isPreviewMode ? '预览模式：仅查看场景 · 滚轮缩放 · 右键旋转' : '先选择对象，再拖动已选对象移动 · 滚轮缩放 · 右键旋转' }}</span>
           </div>
           <div class="axis-indicator"><span class="axis-y">Y</span><span class="axis-x">X</span><span class="axis-z">Z</span><i></i></div>
           <div class="view-scale"><span>0</span><i></i><span>5 m</span></div>
@@ -170,7 +174,7 @@
         </div>
       </main>
 
-      <aside class="sidebar right-sidebar">
+      <aside v-if="!isPreviewMode" class="sidebar right-sidebar">
         <div class="right-heading">
           <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? '机柜属性' : '场景工具' }}</h2></div>
           <span class="more-dots">···</span>
@@ -500,6 +504,7 @@ type SceneDocument = {
 const viewport = ref<HTMLDivElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const sceneFileInput = ref<HTMLInputElement | null>(null);
+const isPreviewMode = ref(false);
 const room = reactive({ width: 12, length: 9, height: 4 });
 const roomDraft = reactive({ width: 12, length: 9, height: 4 });
 const defaultLightingSettings: LightingSettings = {
@@ -563,6 +568,7 @@ let freeRackPrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
 let activeDrag: { kind: 'rack' | 'partition'; id: string } | null = null;
+let activePointerId: number | null = null;
 let floorPlaneForDrag: THREE.Plane;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -1314,7 +1320,24 @@ function clampRackToRoom(rack: RackItem) {
 }
 
 function selectItem(id: string) {
+  if (isPreviewMode.value) return;
   if (racks.value.some((rack) => rack.id === id) || partitions.value.some((partition) => partition.id === id)) selectedId.value = id;
+}
+
+function setEditMode() {
+  isPreviewMode.value = false;
+  if (controls) controls.enabled = true;
+}
+
+function setPreviewMode() {
+  isPreviewMode.value = true;
+  if (activePointerId !== null && renderer?.domElement.hasPointerCapture(activePointerId)) {
+    renderer.domElement.releasePointerCapture(activePointerId);
+  }
+  activeDrag = null;
+  activePointerId = null;
+  if (controls) controls.enabled = true;
+  selectedId.value = null;
 }
 
 function updateSelectionOutline() {
@@ -1900,7 +1923,7 @@ function setPointer(event: PointerEvent) {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (event.button !== 0 || !renderer || !camera) return;
+  if (isPreviewMode.value || event.button !== 0 || !renderer || !camera) return;
   setPointer(event);
   raycaster.setFromCamera(pointer, camera);
   const meshes = [...racks.value, ...partitions.value].flatMap((item) => {
@@ -1936,11 +1959,12 @@ function onPointerDown(event: PointerEvent) {
   floorPlaneForDrag = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.035);
   controls.enabled = false;
   renderer.domElement.setPointerCapture(event.pointerId);
+  activePointerId = event.pointerId;
   moveRack(event);
 }
 
 function moveRack(event: PointerEvent) {
-  if (!activeDrag || selectedId.value !== activeDrag.id) return;
+  if (isPreviewMode.value || !activeDrag || selectedId.value !== activeDrag.id) return;
   setPointer(event);
   raycaster.setFromCamera(pointer, camera);
   const point = raycaster.ray.intersectPlane(floorPlaneForDrag, new THREE.Vector3());
@@ -1970,12 +1994,16 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp() {
-  if (!activeDrag) return;
+  if (!activeDrag) {
+    activePointerId = null;
+    return;
+  }
   if (activeDrag.kind === 'partition') {
     const partition = partitions.value.find((item) => item.id === activeDrag?.id);
     if (partition) rebuildPartition(partition);
   }
   activeDrag = null;
+  activePointerId = null;
   controls.enabled = true;
 }
 
@@ -2167,6 +2195,10 @@ button { color: inherit; }
 .live-dot { height: 6px; width: 6px; border-radius: 50%; background: #6bc7ae; box-shadow: 0 0 9px rgba(107, 199, 174, .55); display: inline-block; }
 .saved-state { font-size: 10px; color: #87949b; padding: 4px 8px; border: 1px solid rgba(255,255,255,.09); border-radius: 3px; margin-left: 4px; }
 .top-actions { display: flex; gap: 9px; align-items: center; }
+.mode-switch { height: 34px; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid rgba(255,255,255,.12); border-radius: 4px; background: rgba(0,0,0,.12); }
+.mode-switch button { height: 28px; padding: 0 10px; border: 0; border-radius: 3px; background: transparent; color: #91a1a8; font-size: 10px; cursor: pointer; }
+.mode-switch button:hover { color: #dce9e8; }
+.mode-switch button.active { background: rgba(97,194,194,.17); color: #9de0da; box-shadow: inset 0 0 0 1px rgba(131,217,212,.18); }
 .top-button { height: 34px; border-radius: 4px; padding: 0 12px; font-size: 11px; border: 1px solid transparent; cursor: pointer; transition: .18s ease; }
 .top-button.subtle { background: transparent; color: #a7b3bb; border-color: rgba(255,255,255,.12); }
 .top-button.subtle:hover { color: #eaf5f3; border-color: rgba(131,217,212,.45); }
@@ -2178,6 +2210,7 @@ button { color: inherit; }
 .plus { font-size: 15px; margin-right: 4px; }
 
 .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 258px minmax(420px, 1fr) 300px; }
+.workspace.preview-workspace { grid-template-columns: minmax(0, 1fr); }
 .sidebar { min-height: 0; display: flex; flex-direction: column; background: #151e25; position: relative; z-index: 2; }
 .left-sidebar { border-right: 1px solid var(--line); }
 .right-sidebar { border-left: 1px solid var(--line); overflow-y: auto; }
