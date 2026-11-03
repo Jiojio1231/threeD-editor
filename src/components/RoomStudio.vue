@@ -62,30 +62,36 @@
             <span class="count-pill">{{ (racks.length + partitions.length).toString().padStart(2, '0') }}</span>
           </div>
           <div class="object-list">
-            <button
+            <div
               v-for="rack in racks"
               :key="rack.id"
               class="object-row"
-              :class="{ selected: selectedId === rack.id }"
-              type="button"
-              @click="selectItem(rack.id)"
+              :class="{ selected: selectedId === rack.id, locked: rack.locked }"
             >
-              <span class="object-thumb"><span class="rack-glyph"></span></span>
-              <span class="object-copy"><strong>{{ rack.name }}</strong><small>{{ rack.kind === 'imported' ? '导入模型' : '标准机柜' }} · {{ rack.height.toFixed(1) }} m</small></span>
-              <span class="object-chevron">›</span>
-            </button>
-            <button
+              <button class="object-select" type="button" @click="selectItem(rack.id)">
+                <span class="object-thumb"><span class="rack-glyph"></span></span>
+                <span class="object-copy"><strong>{{ rack.name }}</strong><small>{{ rack.kind === 'imported' ? '导入模型' : '标准机柜' }} · {{ rack.height.toFixed(1) }} m</small></span>
+                <span class="object-chevron">›</span>
+              </button>
+              <button class="lock-toggle" :class="{ active: rack.locked }" type="button" :aria-label="rack.locked ? `解锁${rack.name}` : `锁定${rack.name}`" :title="rack.locked ? '解锁物体' : '锁定物体'" @click.stop="toggleLock(rack.id)">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="rack.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
+              </button>
+            </div>
+            <div
               v-for="partition in partitions"
               :key="partition.id"
               class="object-row"
-              :class="{ selected: selectedId === partition.id }"
-              type="button"
-              @click="selectItem(partition.id)"
+              :class="{ selected: selectedId === partition.id, locked: partition.locked }"
             >
-              <span class="object-thumb partition-thumb"><span class="partition-glyph"></span></span>
-              <span class="object-copy"><strong>{{ partition.name }}</strong><small>隔板 · {{ partition.length.toFixed(1) }} m{{ partition.hasDoor ? ' · 含门' : '' }}</small></span>
-              <span class="object-chevron">›</span>
-            </button>
+              <button class="object-select" type="button" @click="selectItem(partition.id)">
+                <span class="object-thumb partition-thumb"><span class="partition-glyph"></span></span>
+                <span class="object-copy"><strong>{{ partition.name }}</strong><small>{{ partition.roomWallSide ? '机房外墙' : '隔板' }} · {{ partition.length.toFixed(1) }} m{{ partition.doors.length ? ` · ${partition.doors.length} 扇门` : '' }}</small></span>
+                <span class="object-chevron">›</span>
+              </button>
+              <button v-if="!partition.roomWallSide" class="lock-toggle" :class="{ active: partition.locked }" type="button" :aria-label="partition.locked ? `解锁${partition.name}` : `锁定${partition.name}`" :title="partition.locked ? '解锁物体' : '锁定物体'" @click.stop="toggleLock(partition.id)">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="partition.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
+              </button>
+            </div>
             <div v-if="!racks.length && !partitions.length" class="empty-objects">还没有机柜或隔板，添加一个开始布局。</div>
           </div>
           <button class="import-button" type="button" @click="triggerImport">
@@ -154,52 +160,95 @@
 
       <aside class="sidebar right-sidebar">
         <div class="right-heading">
-          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? '隔板属性' : selectedRack ? '机柜属性' : '场景工具' }}</h2></div>
+          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? '机柜属性' : '场景工具' }}</h2></div>
           <span class="more-dots">···</span>
         </div>
 
         <template v-if="selectedPartition">
           <div class="selected-card">
             <div class="selected-preview partition-preview"><span class="partition-glyph large"></span><span class="preview-glow"></span></div>
-            <div class="selected-name"><span class="selected-type">ROOM PARTITION</span><strong>{{ selectedPartition.name }}</strong><small>对象 ID · {{ selectedPartition.id.slice(-6).toUpperCase() }}</small></div>
+            <div class="selected-name"><span class="selected-type">{{ selectedPartition.roomWallSide ? 'ROOM WALL' : 'ROOM PARTITION' }}</span><strong>{{ selectedPartition.name }}</strong><small>对象 ID · {{ selectedPartition.id.slice(-6).toUpperCase() }}</small></div>
+            <button v-if="!selectedPartition.roomWallSide" class="selected-lock-button" :class="{ active: selectedPartition.locked }" type="button" :aria-label="selectedPartition.locked ? '解锁隔板' : '锁定隔板'" @click="toggleLock(selectedPartition.id)">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="selectedPartition.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
+              <span>{{ selectedPartition.locked ? '解锁' : '锁定' }}</span>
+            </button>
           </div>
           <section class="property-section">
-            <div class="section-title"><span>位置坐标</span><span class="edit-hint">拖动隔板可快速调整</span></div>
-            <div class="coordinate-grid">
-              <label><span>X</span><input :value="selectedPartition.x.toFixed(1)" type="number" step="0.1" @change="updatePartitionPosition('x', $event)"></label>
+            <div class="section-title"><span>{{ selectedPartition.roomWallSide ? '边界位置' : '位置坐标' }}</span><span class="edit-hint">{{ selectedPartition.roomWallSide ? '固定贴合房间边界' : '拖动隔板可快速调整' }}</span></div>
+            <div v-if="selectedPartition.roomWallSide" class="size-row"><span>墙面</span><strong>{{ roomWallLabel(selectedPartition.roomWallSide) }}</strong></div>
+            <div v-else class="coordinate-grid">
+              <label><span>X</span><input :value="selectedPartition.x.toFixed(1)" type="number" step="0.1" :disabled="selectedPartition.locked" @change="updatePartitionPosition('x', $event)"></label>
               <label><span>Y</span><input value="0.0" type="number" disabled></label>
-              <label><span>Z</span><input :value="selectedPartition.z.toFixed(1)" type="number" step="0.1" @change="updatePartitionPosition('z', $event)"></label>
+              <label><span>Z</span><input :value="selectedPartition.z.toFixed(1)" type="number" step="0.1" :disabled="selectedPartition.locked" @change="updatePartitionPosition('z', $event)"></label>
             </div>
           </section>
           <section class="property-section">
             <div class="section-title"><span>隔板尺寸</span><span class="unit-tag">m</span></div>
-            <label class="partition-length-field"><span>长度</span><input :value="selectedPartition.length.toFixed(1)" type="number" min="2" :max="partitionMaxLength(selectedPartition)" step="0.1" @change="updatePartitionLength($event)"><b>m</b></label>
+            <label class="partition-length-field"><span>长度</span><input :value="selectedPartition.length.toFixed(1)" type="number" :min="partitionMinLength(selectedPartition)" :max="partitionMaxLength(selectedPartition)" step="0.1" :disabled="selectedPartition.locked || Boolean(selectedPartition.roomWallSide)" @change="updatePartitionLength($event)"><b>m</b></label>
             <div class="size-row"><span>厚度</span><strong>{{ selectedPartition.thickness.toFixed(2) }} <small>m</small></strong></div>
             <div class="size-row"><span>高度</span><strong>{{ room.height.toFixed(2) }} <small>m</small></strong></div>
-            <button class="rotate-button" type="button" @click="rotateSelectedPartition"><span>⟳</span> 旋转 90° <small>当前 {{ selectedPartition.rotation === 0 ? '横向' : '纵向' }}</small></button>
+            <button class="rotate-button" type="button" :disabled="selectedPartition.locked || Boolean(selectedPartition.roomWallSide)" @click="rotateSelectedPartition"><span>⟳</span> 旋转 90° <small>{{ selectedPartition.roomWallSide ? '边界墙固定' : selectedPartition.locked ? '已锁定' : `当前 ${selectedPartition.rotation === 0 ? '横向' : '纵向'}` }}</small></button>
+          </section>
+          <section class="property-section wall-appearance-section">
+            <div class="section-title"><span>墙面外观</span><span class="edit-hint">材质与颜色</span></div>
+            <label class="wall-material-field">
+              <span>材质</span>
+              <select :value="selectedPartition.wallMaterialType" aria-label="墙体材质" @change="updatePartitionMaterial($event)">
+                <option value="paint">喷涂金属板</option>
+                <option value="concrete">混凝土</option>
+                <option value="steel">不锈钢板</option>
+                <option value="brick">砖墙</option>
+              </select>
+            </label>
+            <label class="wall-color-field">
+              <span>颜色</span>
+              <input :value="selectedPartition.wallColor" type="color" aria-label="墙体颜色" @input="updatePartitionColor($event)">
+              <strong>{{ selectedPartition.wallColor.toUpperCase() }}</strong>
+            </label>
           </section>
           <section class="partition-door-panel">
-            <div class="section-title"><span>隔板门</span><span class="door-status" :class="{ installed: selectedPartition.hasDoor }">{{ selectedPartition.hasDoor ? '已安装' : '未安装' }}</span></div>
-            <p>{{ selectedPartition.hasDoor ? '门洞位于隔板中央，可切换门扇开合状态。' : '在隔板中央开设门洞并安装门扇。' }}</p>
-            <button v-if="!selectedPartition.hasDoor" class="annotation-add" type="button" @click="addPartitionDoor"><span>＋</span> 在隔板上添加门</button>
-            <div v-else class="door-actions">
-              <button class="annotation-add" type="button" @click="togglePartitionDoor"><span>{{ selectedPartition.doorOpen ? '↶' : '↗' }}</span> {{ selectedPartition.doorOpen ? '关闭门扇' : '打开门扇' }}</button>
-              <button class="remove-door-button" type="button" @click="removePartitionDoor">移除门</button>
+            <div class="section-title"><span>隔板门</span><span class="door-status" :class="{ installed: selectedPartition.doors.length }">{{ selectedPartition.doors.length ? `${selectedPartition.doors.length} 扇门` : '未安装' }}</span></div>
+            <p>可在隔板上添加多扇门，分别调整位置和开合状态。</p>
+            <button class="annotation-add" type="button" :disabled="selectedPartition.locked || selectedPartition.doors.length >= partitionMaxDoorCount(selectedPartition)" @click="addPartitionDoor"><span>＋</span> 添加一扇门</button>
+            <div v-for="(door, index) in selectedPartition.doors" :key="door.id" class="partition-door-item">
+              <div class="door-item-heading"><strong>门 {{ index + 1 }}</strong><span>{{ door.doorOpen ? '已打开' : '已关闭' }}</span></div>
+              <div class="door-actions">
+                <button class="annotation-add" type="button" @click="togglePartitionDoor(door.id)"><span>{{ door.doorOpen ? '↶' : '↗' }}</span> {{ door.doorOpen ? '关闭门扇' : '打开门扇' }}</button>
+                <button class="remove-door-button" type="button" :disabled="selectedPartition.locked" @click="removePartitionDoor(door.id)">移除</button>
+              </div>
+              <label class="door-position-control">
+                <span class="door-position-label"><span>门洞位置 <small>距左端</small></span><strong>{{ (selectedPartition.length / 2 + door.doorOffset).toFixed(2) }} m</strong></span>
+                <input
+                  type="range"
+                  :min="partitionDoorPositionMin(selectedPartition, index)"
+                  :max="partitionDoorPositionMax(selectedPartition, index)"
+                  step="0.05"
+                  :value="selectedPartition.length / 2 + door.doorOffset"
+                  :disabled="selectedPartition.locked"
+                  :aria-label="`门 ${index + 1} 距隔板左端距离`"
+                  @input="updatePartitionDoorPosition(door.id, $event)"
+                >
+                <span class="door-position-ends"><span>左</span><span>右</span></span>
+              </label>
             </div>
           </section>
-          <button class="danger-button" type="button" @click="removeSelectedPartition"><span>⌫</span> 删除此隔板</button>
+          <button v-if="!selectedPartition.roomWallSide" class="danger-button" type="button" @click="removeSelectedPartition"><span>⌫</span> 删除此隔板</button>
         </template>
         <template v-else-if="selectedRack">
           <div class="selected-card">
             <div class="selected-preview"><span class="rack-glyph large"></span><span class="preview-glow"></span></div>
             <div class="selected-name"><span class="selected-type">{{ selectedRack.kind === 'imported' ? 'IMPORT MODEL' : 'SERVER RACK' }}</span><strong>{{ selectedRack.name }}</strong><small>对象 ID · {{ selectedRack.id.slice(-6).toUpperCase() }}</small></div>
+            <button class="selected-lock-button" :class="{ active: selectedRack.locked }" type="button" :aria-label="selectedRack.locked ? '解锁物体' : '锁定物体'" @click="toggleLock(selectedRack.id)">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="selectedRack.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
+              <span>{{ selectedRack.locked ? '解锁' : '锁定' }}</span>
+            </button>
           </div>
           <section class="property-section">
             <div class="section-title"><span>位置坐标</span><span class="edit-hint">拖动模型可快速调整</span></div>
             <div class="coordinate-grid">
-              <label><span>X</span><input :value="selectedRack.x.toFixed(1)" type="number" step="0.1" @change="updatePosition('x', $event)"></label>
+              <label><span>X</span><input :value="selectedRack.x.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('x', $event)"></label>
               <label><span>Y</span><input value="0.0" type="number" disabled></label>
-              <label><span>Z</span><input :value="selectedRack.z.toFixed(1)" type="number" step="0.1" @change="updatePosition('z', $event)"></label>
+              <label><span>Z</span><input :value="selectedRack.z.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('z', $event)"></label>
             </div>
           </section>
           <section class="property-section dimension-properties">
@@ -267,7 +316,11 @@ type RackItem = {
   height: number;
   x: number;
   z: number;
+  locked: boolean;
 };
+
+type RoomWallSide = 'north' | 'south' | 'east' | 'west';
+type WallMaterialType = 'paint' | 'concrete' | 'steel' | 'brick';
 
 type PartitionItem = {
   id: string;
@@ -279,8 +332,17 @@ type PartitionItem = {
   x: number;
   z: number;
   fullSpan: boolean;
-  hasDoor: boolean;
+  locked: boolean;
+  roomWallSide: RoomWallSide | null;
+  wallMaterialType: WallMaterialType;
+  wallColor: string;
+  doors: PartitionDoor[];
+};
+
+type PartitionDoor = {
+  id: string;
   doorOpen: boolean;
+  doorOffset: number;
 };
 
 type Annotation = {
@@ -324,9 +386,28 @@ let floorPlaneForDrag: THREE.Plane;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const gltfLoader = new GLTFLoader();
+const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalness: number }> = {
+  paint: { roughness: 0.72, metalness: 0.12 },
+  concrete: { roughness: 0.94, metalness: 0.02 },
+  steel: { roughness: 0.38, metalness: 0.64 },
+  brick: { roughness: 0.9, metalness: 0 },
+};
 
 function makeMaterial(color: number, roughness = 0.7, metalness = 0) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+}
+
+function toggleLock(id: string) {
+  const rack = racks.value.find((item) => item.id === id);
+  const partition = partitions.value.find((item) => item.id === id);
+  const item = rack ?? partition;
+  if (!item) return;
+  selectedId.value = id;
+  item.locked = !item.locked;
+  if (item.locked && activeDrag?.id === id) {
+    activeDrag = null;
+    controls.enabled = true;
+  }
 }
 
 function makeBox(
@@ -364,8 +445,6 @@ function buildRoom() {
   roomOutline = new THREE.Group();
   const halfW = room.width / 2;
   const halfL = room.length / 2;
-  const wallColor = makeMaterial(0x26384b, 0.52, 0.3);
-  const trimColor = makeMaterial(0x49647a, 0.4, 0.55);
   const floorColor = makeMaterial(0x26313b, 0.84, 0.08);
 
   floorPlane = new THREE.Mesh(new THREE.PlaneGeometry(room.width, room.length), floorColor);
@@ -386,39 +465,6 @@ function buildRoom() {
   roomGroup.add(grid);
 
   const wallHeight = room.height;
-  const wallThickness = 0.16;
-  const sideWallMaterial = new THREE.MeshStandardMaterial({
-    color: 0x34506a,
-    roughness: 0.55,
-    metalness: 0.3,
-    transparent: true,
-    opacity: 0.25,
-    side: THREE.DoubleSide,
-  });
-  makeBox(roomGroup, wallThickness, wallHeight, room.length, sideWallMaterial, -halfW, wallHeight / 2, 0);
-  makeBox(roomGroup, wallThickness, wallHeight, room.length, sideWallMaterial, halfW, wallHeight / 2, 0);
-  makeBox(roomGroup, room.width, wallHeight, wallThickness, sideWallMaterial, 0, wallHeight / 2, -halfL);
-
-  const doorWidth = Math.min(2.2, room.width * 0.34);
-  const sideSpan = Math.max(0, (room.width - doorWidth) / 2);
-  if (sideSpan > 0.15) {
-    makeBox(roomGroup, sideSpan, wallHeight, wallThickness, sideWallMaterial, -(doorWidth + sideSpan) / 2, wallHeight / 2, halfL);
-    makeBox(roomGroup, sideSpan, wallHeight, wallThickness, sideWallMaterial, (doorWidth + sideSpan) / 2, wallHeight / 2, halfL);
-  }
-
-  const doorHeight = Math.min(2.45, wallHeight - 0.25);
-  const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x42566a, roughness: 0.42, metalness: 0.45 });
-  makeBox(roomGroup, 0.055, doorHeight, 0.12, trimColor, -doorWidth / 2, doorHeight / 2, halfL);
-  makeBox(roomGroup, 0.055, doorHeight, 0.12, trimColor, doorWidth / 2, doorHeight / 2, halfL);
-  makeBox(roomGroup, doorWidth + 0.11, 0.08, 0.12, trimColor, 0, doorHeight, halfL);
-  const leafWidth = doorWidth / 2 - 0.035;
-  for (const sign of [-1, 1]) {
-    const leaf = makeBox(roomGroup, leafWidth, doorHeight - 0.08, 0.055, doorMaterial, sign * (doorWidth / 4), (doorHeight - 0.08) / 2, halfL - 0.04);
-    const inset = makeMaterial(0x344858, 0.5, 0.45);
-    makeBox(leaf, leafWidth * 0.62, doorHeight * 0.62, 0.015, inset, 0, 0, 0.037);
-    makeBox(roomGroup, 0.025, 0.14, 0.025, trimColor, sign * (doorWidth / 4) + sign * (leafWidth * 0.34), 1.03, halfL - 0.005);
-  }
-
   const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x6bb2c3, transparent: true, opacity: 0.75 });
   const perimeter = [
     new THREE.Vector3(-halfW, 0.035, -halfL), new THREE.Vector3(halfW, 0.035, -halfL),
@@ -449,6 +495,46 @@ function buildRoom() {
     makeBox(roomGroup, room.width, 0.08, 0.08, ceilingBars, 0, wallHeight, z);
   }
   scene.add(roomGroup, roomOutline);
+}
+
+function roomWallLabel(side: RoomWallSide) {
+  const labels: Record<RoomWallSide, string> = {
+    north: '北墙',
+    south: '南墙',
+    east: '东墙',
+    west: '西墙',
+  };
+  return labels[side];
+}
+
+function createRoomWalls() {
+  const definitions: RoomWallSide[] = ['north', 'south', 'east', 'west'];
+  for (const side of definitions) {
+    const horizontal = side === 'north' || side === 'south';
+    const id = createId();
+    const partition: PartitionItem = reactive({
+      id,
+      name: `机房外墙 - ${roomWallLabel(side)}`,
+      group: markRaw(new THREE.Group()),
+      length: horizontal ? room.width : room.length,
+      thickness: 0.14,
+      rotation: horizontal ? 0 : 1,
+      x: 0,
+      z: 0,
+      fullSpan: true,
+      locked: false,
+      roomWallSide: side,
+      wallMaterialType: 'paint',
+      wallColor: '#78919c',
+      doors: [],
+    });
+    partition.group.name = partition.name;
+    partition.group.userData.itemId = id;
+    scene.add(partition.group);
+    partitions.value.push(partition);
+    clampPartitionToRoom(partition);
+    rebuildPartition(partition);
+  }
 }
 
 function buildRack(name: string, id: string) {
@@ -536,6 +622,7 @@ function addRack() {
     group: markRaw(built.group),
     x: position.x,
     z: position.z,
+    locked: false,
   });
   selectedId.value = id;
 }
@@ -543,7 +630,7 @@ function addRack() {
 function addPartition() {
   if (!scene) return;
   const id = createId();
-  let index = partitions.value.length + 1;
+  let index = partitions.value.filter((partition) => !partition.roomWallSide).length + 1;
   while (partitions.value.some((partition) => partition.name === `隔板 ${String(index).padStart(2, '0')}`)) index += 1;
   const length = room.width;
   const position = findPartitionPosition(length, 0.14, 0);
@@ -557,8 +644,11 @@ function addPartition() {
     x: position.x,
     z: position.z,
     fullSpan: true,
-    hasDoor: false,
-    doorOpen: false,
+    locked: false,
+    roomWallSide: null,
+    wallMaterialType: 'paint',
+    wallColor: '#78919c',
+    doors: [],
   });
   partition.group.name = partition.name;
   partition.group.userData.itemId = id;
@@ -594,6 +684,7 @@ function findPartitionPosition(length: number, thickness: number, rotation: 0 | 
 }
 
 function rebuildPartition(partition: PartitionItem) {
+  clampPartitionDoorPositions(partition);
   for (const child of [...partition.group.children]) {
     partition.group.remove(child);
     disposeGroup(child);
@@ -604,12 +695,11 @@ function rebuildPartition(partition: PartitionItem) {
   const halfLength = length / 2;
   const halfThickness = partition.thickness / 2;
   const wallHeight = room.height;
+  const wallPreset = wallMaterialPresets[partition.wallMaterialType];
   const wallMaterial = new THREE.MeshStandardMaterial({
-    color: 0x78919c,
-    roughness: 0.72,
-    metalness: 0.12,
-    transparent: true,
-    opacity: 0.74,
+    color: partition.wallColor,
+    roughness: wallPreset.roughness,
+    metalness: wallPreset.metalness,
     side: THREE.DoubleSide,
   });
   const trimMaterial = makeMaterial(0x9caeae, 0.45, 0.36);
@@ -620,29 +710,61 @@ function rebuildPartition(partition: PartitionItem) {
     emissiveIntensity: 0.35,
     roughness: 0.45,
   });
-  const openingWidth = Math.min(0.95, length - 0.6);
+  const openingWidth = partitionDoorWidth(partition);
   const doorHeight = Math.min(2.2, wallHeight - 0.12);
+  const doorHeaderHeight = 0.09;
+  const opensIntoRoom = partition.roomWallSide === null
+    || partition.roomWallSide === 'north'
+    || partition.roomWallSide === 'west';
 
-  if (!partition.hasDoor) {
+  if (!partition.doors.length) {
     makeBox(partition.group, length, wallHeight, partition.thickness, wallMaterial, 0, wallHeight / 2, 0);
   } else {
-    const segmentLength = (length - openingWidth) / 2;
-    makeBox(partition.group, segmentLength, wallHeight, partition.thickness, wallMaterial, -(openingWidth + segmentLength) / 2, wallHeight / 2, 0);
-    makeBox(partition.group, segmentLength, wallHeight, partition.thickness, wallMaterial, (openingWidth + segmentLength) / 2, wallHeight / 2, 0);
-    makeBox(partition.group, openingWidth + partition.thickness, 0.09, partition.thickness + 0.025, trimMaterial, 0, doorHeight, 0);
-    for (const side of [-1, 1]) {
-      makeBox(partition.group, 0.06, doorHeight, partition.thickness + 0.035, trimMaterial, side * openingWidth / 2, doorHeight / 2, 0);
+    let wallCursor = -halfLength;
+    for (const door of partition.doors) {
+      const doorCenter = door.doorOffset;
+      const doorLeft = doorCenter - openingWidth / 2;
+      const doorRight = doorCenter + openingWidth / 2;
+      const wallSegmentLength = doorLeft - wallCursor;
+      makeBox(
+        partition.group,
+        wallSegmentLength,
+        wallHeight,
+        partition.thickness,
+        wallMaterial,
+        (wallCursor + doorLeft) / 2,
+        wallHeight / 2,
+        0,
+      );
+      makeBox(
+        partition.group,
+        openingWidth,
+        wallHeight - doorHeight - doorHeaderHeight,
+        partition.thickness,
+        wallMaterial,
+        doorCenter,
+        (wallHeight + doorHeight + doorHeaderHeight) / 2,
+        0,
+      );
+      makeBox(partition.group, openingWidth + partition.thickness, doorHeaderHeight, partition.thickness + 0.025, trimMaterial, doorCenter, doorHeight + doorHeaderHeight / 2, 0);
+      for (const side of [-1, 1]) {
+        makeBox(partition.group, 0.06, doorHeight, partition.thickness + 0.035, trimMaterial, doorCenter + side * openingWidth / 2, doorHeight / 2, 0);
+      }
+
+      const hinge = new THREE.Group();
+      hinge.position.set(doorLeft + 0.035, 0, (opensIntoRoom ? 1 : -1) * (halfThickness + 0.025));
+      hinge.name = `Partition door hinge ${door.id}`;
+      const leafWidth = openingWidth - 0.07;
+      makeBox(hinge, leafWidth, doorHeight - 0.035, 0.055, doorMaterial, leafWidth / 2, (doorHeight - 0.035) / 2, 0);
+      makeBox(hinge, 0.025, 0.12, 0.025, trimMaterial, leafWidth - 0.1, 1.02, 0.04);
+      makeBox(hinge, 0.018, doorHeight - 0.18, 0.018, markerMaterial, 0.08, (doorHeight - 0.18) / 2, 0.035);
+      hinge.rotation.y = door.doorOpen ? (opensIntoRoom ? -1 : 1) * Math.PI / 2 : 0;
+      partition.group.add(hinge);
+      wallCursor = doorRight;
     }
 
-    const hinge = new THREE.Group();
-    hinge.position.set(-openingWidth / 2 + 0.035, 0, halfThickness + 0.025);
-    hinge.name = 'Partition door hinge';
-    const leafWidth = openingWidth - 0.07;
-    makeBox(hinge, leafWidth, doorHeight - 0.035, 0.055, doorMaterial, leafWidth / 2, (doorHeight - 0.035) / 2, 0);
-    makeBox(hinge, 0.025, 0.12, 0.025, trimMaterial, leafWidth - 0.1, 1.02, 0.04);
-    makeBox(hinge, 0.018, doorHeight - 0.18, 0.018, markerMaterial, 0.08, (doorHeight - 0.18) / 2, 0.035);
-    hinge.rotation.y = partition.doorOpen ? -Math.PI / 2 : 0;
-    partition.group.add(hinge);
+    const finalWallLength = halfLength - wallCursor;
+    makeBox(partition.group, finalWallLength, wallHeight, partition.thickness, wallMaterial, (wallCursor + halfLength) / 2, wallHeight / 2, 0);
   }
 
   const baseMaterial = makeMaterial(0x617c83, 0.56, 0.46);
@@ -663,7 +785,76 @@ function partitionMaxLength(partition: PartitionItem) {
   return partition.rotation === 0 ? room.width : room.length;
 }
 
+function partitionMinLength(partition: PartitionItem) {
+  return Math.max(2, 0.15 + partition.doors.length * 0.75);
+}
+
+function partitionDoorWidth(partition: PartitionItem, doorCount = Math.max(1, partition.doors.length)) {
+  const edgeMargin = 0.15;
+  const gap = 0.15;
+  return Math.max(0.01, Math.min(0.95, (partition.length - edgeMargin * 2 - gap * (doorCount - 1)) / doorCount));
+}
+
+function partitionMaxDoorCount(partition: PartitionItem) {
+  const minimumDoorWidth = 0.6;
+  const edgeMargin = 0.15;
+  const gap = 0.15;
+  return Math.max(1, Math.floor((partition.length - edgeMargin * 2 + gap) / (minimumDoorWidth + gap)));
+}
+
+function partitionDoorPositionMin(partition: PartitionItem, index: number) {
+  const width = partitionDoorWidth(partition);
+  const previousDoor = partition.doors[index - 1];
+  return previousDoor
+    ? partition.length / 2 + previousDoor.doorOffset + width + 0.15
+    : 0.15 + width / 2;
+}
+
+function partitionDoorPositionMax(partition: PartitionItem, index: number) {
+  const width = partitionDoorWidth(partition);
+  const nextDoor = partition.doors[index + 1];
+  return nextDoor
+    ? partition.length / 2 + nextDoor.doorOffset - width - 0.15
+    : partition.length - 0.15 - width / 2;
+}
+
+function updatePartitionDoorPosition(doorId: string, event: Event) {
+  const partition = selectedPartition.value;
+  const door = partition?.doors.find((item) => item.id === doorId);
+  const input = event.target as HTMLInputElement;
+  const index = partition?.doors.findIndex((item) => item.id === doorId) ?? -1;
+  if (!partition || !door || index < 0 || partition.locked || !Number.isFinite(input.valueAsNumber)) return;
+  const centerFromLeft = clampNumber(input.valueAsNumber, partitionDoorPositionMin(partition, index), partitionDoorPositionMax(partition, index), partition.length / 2);
+  door.doorOffset = centerFromLeft - partition.length / 2;
+  rebuildPartition(partition);
+}
+
+function clampPartitionDoorPositions(partition: PartitionItem) {
+  if (!partition.doors.length) return;
+  partition.doors.sort((a, b) => a.doorOffset - b.doorOffset);
+  const spacing = partitionDoorWidth(partition) + 0.15;
+  const minimum = 0.15 + partitionDoorWidth(partition) / 2;
+  const maximum = partition.length - minimum;
+  let previousCenter = Number.NEGATIVE_INFINITY;
+  partition.doors.forEach((door, index) => {
+    const lowerBound = Math.max(minimum + index * spacing, previousCenter + spacing);
+    const upperBound = maximum - (partition.doors.length - index - 1) * spacing;
+    const center = clampNumber(partition.length / 2 + door.doorOffset, lowerBound, upperBound, partition.length / 2);
+    door.doorOffset = center - partition.length / 2;
+    previousCenter = center;
+  });
+}
+
 function clampPartitionToRoom(partition: PartitionItem) {
+  if (partition.roomWallSide) {
+    const horizontal = partition.roomWallSide === 'north' || partition.roomWallSide === 'south';
+    partition.rotation = horizontal ? 0 : 1;
+    partition.length = partitionMaxLength(partition);
+    partition.x = partition.roomWallSide === 'west' ? -room.width / 2 : partition.roomWallSide === 'east' ? room.width / 2 : 0;
+    partition.z = partition.roomWallSide === 'north' ? -room.length / 2 : partition.roomWallSide === 'south' ? room.length / 2 : 0;
+    partition.group.position.set(partition.x, 0, partition.z);
+    return;
+  }
   partition.length = Math.min(partition.length, partitionMaxLength(partition));
   const alongX = partition.rotation === 0;
   const limitX = alongX
@@ -680,7 +871,7 @@ function clampPartitionToRoom(partition: PartitionItem) {
 function updatePartitionPosition(axis: 'x' | 'z', event: Event) {
   const partition = selectedPartition.value;
   const input = event.target as HTMLInputElement;
-  if (!partition || !Number.isFinite(input.valueAsNumber)) return;
+  if (!partition || partition.roomWallSide || partition.locked || !Number.isFinite(input.valueAsNumber)) return;
   partition[axis] = input.valueAsNumber;
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
@@ -689,16 +880,36 @@ function updatePartitionPosition(axis: 'x' | 'z', event: Event) {
 function updatePartitionLength(event: Event) {
   const partition = selectedPartition.value;
   const input = event.target as HTMLInputElement;
-  if (!partition || !Number.isFinite(input.valueAsNumber)) return;
-  partition.length = clampNumber(input.valueAsNumber, 2, partitionMaxLength(partition), partition.length);
+  if (!partition || partition.roomWallSide || partition.locked || !Number.isFinite(input.valueAsNumber)) return;
+  partition.length = clampNumber(input.valueAsNumber, partitionMinLength(partition), partitionMaxLength(partition), partition.length);
   partition.fullSpan = false;
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
 }
 
+function updatePartitionMaterial(event: Event) {
+  const partition = selectedPartition.value;
+  const input = event.target as HTMLSelectElement;
+  if (!partition || !isWallMaterialType(input.value)) return;
+  partition.wallMaterialType = input.value;
+  rebuildPartition(partition);
+}
+
+function isWallMaterialType(value: string): value is WallMaterialType {
+  return value === 'paint' || value === 'concrete' || value === 'steel' || value === 'brick';
+}
+
+function updatePartitionColor(event: Event) {
+  const partition = selectedPartition.value;
+  const input = event.target as HTMLInputElement;
+  if (!partition || !/^#[\da-f]{6}$/i.test(input.value)) return;
+  partition.wallColor = input.value;
+  rebuildPartition(partition);
+}
+
 function rotateSelectedPartition() {
   const partition = selectedPartition.value;
-  if (!partition) return;
+  if (!partition || partition.roomWallSide || partition.locked) return;
   partition.rotation = partition.rotation === 0 ? 1 : 0;
   partition.length = partition.fullSpan
     ? partitionMaxLength(partition)
@@ -709,30 +920,48 @@ function rotateSelectedPartition() {
 
 function addPartitionDoor() {
   const partition = selectedPartition.value;
-  if (!partition) return;
-  partition.hasDoor = true;
-  partition.doorOpen = false;
+  if (!partition || partition.locked || partition.doors.length >= partitionMaxDoorCount(partition)) return;
+  const nextCount = partition.doors.length + 1;
+  const width = partitionDoorWidth(partition, nextCount);
+  const gap = 0.15;
+  const minCenter = 0.15 + width / 2;
+  const maxCenter = partition.length - minCenter;
+  const spacing = width + gap;
+  const candidates = Array.from(
+    { length: Math.floor((maxCenter - minCenter) / 0.05) + 1 },
+    (_, index) => minCenter + index * 0.05,
+  ).sort((a, b) => Math.abs(a - partition.length / 2) - Math.abs(b - partition.length / 2));
+  const centerFromLeft = candidates.find((candidate) => {
+    return partition.doors.every((door) => Math.abs(partition.length / 2 + door.doorOffset - candidate) >= spacing - 0.001);
+  });
+  if (centerFromLeft === undefined) return;
+  partition.doors.push({
+    id: createId(),
+    doorOpen: false,
+    doorOffset: centerFromLeft - partition.length / 2,
+  });
+  partition.doors.sort((a, b) => a.doorOffset - b.doorOffset);
   rebuildPartition(partition);
 }
 
-function togglePartitionDoor() {
+function togglePartitionDoor(doorId: string) {
   const partition = selectedPartition.value;
-  if (!partition || !partition.hasDoor) return;
-  partition.doorOpen = !partition.doorOpen;
+  const door = partition?.doors.find((item) => item.id === doorId);
+  if (!partition || !door) return;
+  door.doorOpen = !door.doorOpen;
   rebuildPartition(partition);
 }
 
-function removePartitionDoor() {
+function removePartitionDoor(doorId: string) {
   const partition = selectedPartition.value;
-  if (!partition) return;
-  partition.hasDoor = false;
-  partition.doorOpen = false;
+  if (!partition || partition.locked || !partition.doors.some((door) => door.id === doorId)) return;
+  partition.doors = partition.doors.filter((door) => door.id !== doorId);
   rebuildPartition(partition);
 }
 
 function removeSelectedPartition() {
   const partition = selectedPartition.value;
-  if (!partition || !scene) return;
+  if (!partition || partition.roomWallSide || !scene) return;
   scene.remove(partition.group);
   disposeGroup(partition.group);
   partitions.value = partitions.value.filter((item) => item.id !== partition.id);
@@ -808,7 +1037,7 @@ function removeSelected() {
 function updatePosition(axis: 'x' | 'z', event: Event) {
   const rack = selectedRack.value;
   const input = event.target as HTMLInputElement;
-  if (!rack || !Number.isFinite(input.valueAsNumber)) return;
+  if (!rack || rack.locked || !Number.isFinite(input.valueAsNumber)) return;
   rack.group.position[axis] = input.valueAsNumber;
   clampRackToRoom(rack);
 }
@@ -869,6 +1098,7 @@ function importModel(event: Event) {
         height: targetHeight,
         x: position.x,
         z: position.z,
+        locked: false,
       });
       selectedId.value = id;
     }, () => {
@@ -976,6 +1206,11 @@ function onPointerDown(event: PointerEvent) {
   const partition = partitions.value.find((item) => item.id === id);
   if (!rack && !partition) return;
   selectedId.value = id ?? null;
+  if (rack?.locked || partition?.locked || partition?.roomWallSide) {
+    activeDrag = null;
+    controls.enabled = true;
+    return;
+  }
   activeDrag = rack ? { kind: 'rack', id: rack.id } : partition ? { kind: 'partition', id: partition.id } : null;
   floorPlaneForDrag = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.035);
   controls.enabled = false;
@@ -992,6 +1227,7 @@ function moveRack(event: PointerEvent) {
   const step = 0.1;
   const rack = activeDrag.kind === 'rack' ? racks.value.find((item) => item.id === activeDrag?.id) : null;
   if (rack) {
+    if (rack.locked) return;
     rack.group.position.x = Math.round(point.x / step) * step;
     rack.group.position.z = Math.round(point.z / step) * step;
     clampRackToRoom(rack);
@@ -999,6 +1235,7 @@ function moveRack(event: PointerEvent) {
   }
   const partition = activeDrag.kind === 'partition' ? partitions.value.find((item) => item.id === activeDrag?.id) : null;
   if (partition) {
+    if (partition.locked) return;
     partition.x = Math.round(point.x / step) * step;
     partition.z = Math.round(point.z / step) * step;
     clampPartitionToRoom(partition);
@@ -1097,6 +1334,7 @@ onMounted(async () => {
   ground.receiveShadow = true;
   scene.add(ground);
   buildRoom();
+  createRoomWalls();
 
   resizeObserver = new ResizeObserver(resizeViewport);
   resizeObserver.observe(viewport.value);
@@ -1218,9 +1456,17 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .inventory-section { padding-top: 17px; }
 .count-pill { margin-left: auto; color: #8ccbc6; font-size: 9px; padding: 3px 6px; background: rgba(98, 188, 184, .11); border-radius: 3px; font-variant-numeric: tabular-nums; }
 .object-list { max-height: 207px; overflow-y: auto; margin: 0 -7px; padding: 0 3px; }
-.object-row { width: 100%; min-height: 51px; display: flex; align-items: center; gap: 9px; text-align: left; padding: 6px; background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.object-row { width: 100%; min-height: 51px; display: flex; align-items: center; gap: 3px; padding: 2px 4px 2px 0; background: transparent; border: 1px solid transparent; border-radius: 4px; }
 .object-row:hover { background: rgba(255,255,255,.025); }
 .object-row.selected { background: rgba(99, 183, 180, .085); border-color: rgba(99, 183, 180, .2); }
+.object-row.locked .object-copy strong { color: #b9d1cf; }
+.object-select { flex: 1; min-width: 0; min-height: 45px; display: flex; align-items: center; gap: 9px; text-align: left; padding: 5px 5px 5px 6px; color: inherit; background: transparent; border: 0; border-radius: 3px; cursor: pointer; }
+.object-select:hover { background: rgba(255,255,255,.025); }
+.lock-toggle { width: 25px; height: 28px; flex: 0 0 25px; display: grid; place-items: center; padding: 0; color: #65777e; background: transparent; border: 1px solid transparent; border-radius: 3px; cursor: pointer; opacity: .55; transition: .15s ease; }
+.object-row:hover .lock-toggle, .object-row.selected .lock-toggle, .lock-toggle.active { opacity: 1; }
+.lock-toggle:hover { color: #a4d8d1; background: rgba(111,191,185,.1); border-color: rgba(111,191,185,.16); }
+.lock-toggle.active { color: #8ed3c6; }
+.lock-toggle svg, .selected-lock-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
 .object-thumb { width: 34px; height: 35px; display: flex; justify-content: center; align-items: center; border-radius: 3px; background: #202c33; border: 1px solid rgba(255,255,255,.045); }
 .rack-glyph { width: 14px; height: 23px; border: 1px solid #8eabb0; border-radius: 2px; position: relative; display: inline-block; background: repeating-linear-gradient(to bottom, transparent 0 3px, rgba(113,169,174,.6) 3px 4px); box-shadow: inset 0 0 0 2px rgba(0,0,0,.15); }
 .rack-glyph::before, .rack-glyph::after { content: ""; position: absolute; top: -1px; bottom: -1px; width: 2px; background: #667e84; }
@@ -1315,12 +1561,21 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .selected-type { color: #73bcb8; font-size: 7px; letter-spacing: 1px; }
 .selected-name strong { color: #e3eaec; font-size: 11px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selected-name small { color: #788890; font-size: 8px; }
+.selected-lock-button { width: 43px; flex: 0 0 43px; align-self: stretch; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; padding: 0; color: #778a8e; background: transparent; border: 0; border-left: 1px solid rgba(179,205,220,.08); font-size: 7px; cursor: pointer; }
+.selected-lock-button:hover, .selected-lock-button.active { color: #87cfc6; background: rgba(111,191,185,.055); }
+.selected-lock-button.active span { color: #91d6c6; }
 .property-section { padding: 0 18px 16px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
 .partition-length-field { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 8px; margin: -2px 0 12px; border: 1px solid rgba(172,199,211,.11); background: #11191f; border-radius: 3px; color: #829198; font-size: 9px; }
 .partition-length-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #d6e0e2; font-size: 10px; }
 .partition-length-field b { color: #75858b; font-size: 8px; font-weight: 400; }
+.wall-material-field, .wall-color-field { min-height: 34px; display: flex; align-items: center; gap: 8px; margin-top: 7px; padding: 0 8px; border: 1px solid rgba(172,199,211,.11); background: #11191f; border-radius: 3px; color: #829198; font-size: 9px; }
+.wall-material-field select { flex: 1; min-width: 0; height: 30px; border: 0; outline: 0; background: #11191f; color: #d6e0e2; font-size: 9px; }
+.wall-color-field input[type="color"] { width: 42px; height: 25px; padding: 2px; border: 1px solid rgba(172,199,211,.18); border-radius: 3px; background: #182229; cursor: pointer; }
+.wall-color-field strong { margin-left: auto; color: #aab8bc; font-size: 9px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .rotate-button { width: 100%; height: 31px; display: flex; align-items: center; gap: 6px; margin-top: 11px; padding: 0 8px; border: 1px solid rgba(172,199,211,.11); background: rgba(255,255,255,.02); color: #a9b8bd; border-radius: 3px; font-size: 9px; text-align: left; cursor: pointer; }
 .rotate-button:hover { border-color: rgba(112,193,188,.32); color: #d1e5e3; }
+.rotate-button:disabled { opacity: .58; cursor: not-allowed; }
+.rotate-button:disabled:hover { border-color: rgba(172,199,211,.11); color: #a9b8bd; }
 .rotate-button > span { color: #85c9c3; font-size: 14px; }
 .rotate-button small { margin-left: auto; color: #71838a; font-size: 8px; }
 .partition-door-panel { padding: 0 18px 15px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
@@ -1328,10 +1583,21 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .partition-door-panel p { margin: 0 0 10px; color: #7e8e94; font-size: 8px; line-height: 1.6; }
 .door-status { margin-left: auto; color: #849397; font-size: 8px; font-weight: 400; }
 .door-status.installed { color: #83c4a8; }
+.partition-door-item { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(172,199,211,.08); }
+.door-item-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; color: #a7b5b9; font-size: 8px; }
+.door-item-heading span { color: #72838a; }
 .door-actions { display: flex; align-items: center; gap: 7px; }
 .door-actions .annotation-add { flex: 1; }
 .remove-door-button { height: 31px; padding: 0 8px; background: transparent; border: 1px solid rgba(219,116,105,.17); border-radius: 3px; color: #c5877f; font-size: 8px; cursor: pointer; }
 .remove-door-button:hover { border-color: rgba(219,116,105,.4); }
+.remove-door-button:disabled { opacity: .45; cursor: not-allowed; }
+.door-position-control { display: block; margin-top: 12px; }
+.door-position-label { display: flex; align-items: center; justify-content: space-between; color: #a7b5b9; font-size: 8px; }
+.door-position-label small { color: #72838a; font-size: 8px; margin-left: 4px; }
+.door-position-label strong { color: #8ed1c8; font-size: 9px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.door-position-control input[type="range"] { display: block; width: 100%; height: 15px; margin: 7px 0 1px; accent-color: #75c9c1; cursor: pointer; }
+.door-position-control input[type="range"]:disabled { opacity: .48; cursor: not-allowed; }
+.door-position-ends { display: flex; justify-content: space-between; color: #6f8087; font-size: 7px; }
 .coordinate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .coordinate-grid label { height: 35px; display: flex; align-items: center; gap: 5px; border: 1px solid rgba(172,199,211,.11); background: #11191f; padding: 0 6px; border-radius: 3px; min-width: 0; }
 .coordinate-grid label > span { color: #70bbb7; font-size: 9px; }
