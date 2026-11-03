@@ -8,7 +8,7 @@
       <div class="project-name">
         <span class="live-dot"></span>
         <span>数据中心 · 1F 机房</span>
-        <span class="saved-state">本地编辑</span>
+        <span class="saved-state">{{ saveStatus }}</span>
       </div>
       <div class="top-actions">
         <button class="top-button subtle" type="button" @click="resetCamera">
@@ -54,6 +54,18 @@
           </div>
           <button class="apply-button" type="button" @click="applyRoomDimensions">应用空间尺寸 <span>↗</span></button>
           <div class="dimension-hint"><span class="tiny-grid">▦</span> 修改尺寸后，机柜贴地，隔板保持在房间范围内</div>
+        </section>
+
+        <section class="side-section scene-file-section">
+          <div class="section-title"><span>场景文件</span><span class="section-note">本地 JSON</span></div>
+          <div class="scene-file-actions">
+            <button type="button" @click="saveSceneToBrowser">保存</button>
+            <button type="button" @click="triggerSceneImport">导入</button>
+            <button type="button" @click="exportSceneFile">导出</button>
+          </div>
+          <p>保存到当前浏览器，或导出 JSON 文件备份并在其他设备导入。</p>
+          <input ref="sceneFileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importSceneFile">
+          <p v-if="sceneFileError" class="error-note">{{ sceneFileError }}</p>
         </section>
 
         <section class="side-section inventory-section">
@@ -305,6 +317,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
 type RackItem = {
   id: string;
@@ -353,8 +366,47 @@ type Annotation = {
   label: CSS2DObject;
 };
 
+type SceneRack = {
+  id: string;
+  name: string;
+  kind: RackItem['kind'];
+  width: number;
+  depth: number;
+  height: number;
+  x: number;
+  z: number;
+  locked: boolean;
+  modelAsset?: Record<string, unknown>;
+};
+
+type ScenePartition = {
+  id: string;
+  name: string;
+  length: number;
+  thickness: number;
+  rotation: 0 | 1;
+  x: number;
+  z: number;
+  fullSpan: boolean;
+  locked: boolean;
+  roomWallSide: RoomWallSide | null;
+  wallMaterialType: WallMaterialType;
+  wallColor: string;
+  doors: PartitionDoor[];
+};
+
+type SceneDocument = {
+  format: 'nexus-space-studio';
+  version: 1;
+  room: { width: number; length: number; height: number };
+  racks: SceneRack[];
+  partitions: ScenePartition[];
+  annotations: Array<Omit<Annotation, 'label'>>;
+};
+
 const viewport = ref<HTMLDivElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+const sceneFileInput = ref<HTMLInputElement | null>(null);
 const room = reactive({ width: 12, length: 9, height: 4 });
 const roomDraft = reactive({ width: 12, length: 9, height: 4 });
 const racks = ref<RackItem[]>([]);
@@ -366,6 +418,8 @@ const annotationDescription = ref('');
 const importError = ref('');
 const assetStatus = ref('CC0 模型加载中');
 const assetError = ref('');
+const saveStatus = ref('尚未保存');
+const sceneFileError = ref('');
 
 const selectedRack = computed(() => racks.value.find((rack) => rack.id === selectedId.value) ?? null);
 const selectedPartition = computed(() => partitions.value.find((partition) => partition.id === selectedId.value) ?? null);
@@ -386,6 +440,8 @@ let floorPlaneForDrag: THREE.Plane;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const gltfLoader = new GLTFLoader();
+const gltfExporter = new GLTFExporter();
+const localSceneStorageKey = 'nexus-space-studio:scene:v1';
 const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalness: number }> = {
   paint: { roughness: 0.72, metalness: 0.12 },
   concrete: { roughness: 0.94, metalness: 0.02 },
@@ -404,6 +460,7 @@ function toggleLock(id: string) {
   if (!item) return;
   selectedId.value = id;
   item.locked = !item.locked;
+  markSceneDirty();
   if (item.locked && activeDrag?.id === id) {
     activeDrag = null;
     controls.enabled = true;
@@ -542,6 +599,7 @@ function buildRack(name: string, id: string) {
   group.name = name;
   if (freeRackPrototype) {
     const model = freeRackPrototype.clone(true);
+    group.userData.sharedAssets = true;
     model.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(model);
     const size = bounds.getSize(new THREE.Vector3());
@@ -625,6 +683,7 @@ function addRack() {
     locked: false,
   });
   selectedId.value = id;
+  markSceneDirty();
 }
 
 function addPartition() {
@@ -657,6 +716,7 @@ function addPartition() {
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
   selectedId.value = id;
+  markSceneDirty();
 }
 
 function findPartitionPosition(length: number, thickness: number, rotation: 0 | 1) {
@@ -827,6 +887,7 @@ function updatePartitionDoorPosition(doorId: string, event: Event) {
   const centerFromLeft = clampNumber(input.valueAsNumber, partitionDoorPositionMin(partition, index), partitionDoorPositionMax(partition, index), partition.length / 2);
   door.doorOffset = centerFromLeft - partition.length / 2;
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function clampPartitionDoorPositions(partition: PartitionItem) {
@@ -875,6 +936,7 @@ function updatePartitionPosition(axis: 'x' | 'z', event: Event) {
   partition[axis] = input.valueAsNumber;
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function updatePartitionLength(event: Event) {
@@ -885,6 +947,7 @@ function updatePartitionLength(event: Event) {
   partition.fullSpan = false;
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function updatePartitionMaterial(event: Event) {
@@ -893,6 +956,7 @@ function updatePartitionMaterial(event: Event) {
   if (!partition || !isWallMaterialType(input.value)) return;
   partition.wallMaterialType = input.value;
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function isWallMaterialType(value: string): value is WallMaterialType {
@@ -905,6 +969,7 @@ function updatePartitionColor(event: Event) {
   if (!partition || !/^#[\da-f]{6}$/i.test(input.value)) return;
   partition.wallColor = input.value;
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function rotateSelectedPartition() {
@@ -916,6 +981,7 @@ function rotateSelectedPartition() {
     : Math.min(partition.length, partitionMaxLength(partition));
   clampPartitionToRoom(partition);
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function addPartitionDoor() {
@@ -942,6 +1008,7 @@ function addPartitionDoor() {
   });
   partition.doors.sort((a, b) => a.doorOffset - b.doorOffset);
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function togglePartitionDoor(doorId: string) {
@@ -950,6 +1017,7 @@ function togglePartitionDoor(doorId: string) {
   if (!partition || !door) return;
   door.doorOpen = !door.doorOpen;
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function removePartitionDoor(doorId: string) {
@@ -957,6 +1025,7 @@ function removePartitionDoor(doorId: string) {
   if (!partition || partition.locked || !partition.doors.some((door) => door.id === doorId)) return;
   partition.doors = partition.doors.filter((door) => door.id !== doorId);
   rebuildPartition(partition);
+  markSceneDirty();
 }
 
 function removeSelectedPartition() {
@@ -966,6 +1035,7 @@ function removeSelectedPartition() {
   disposeGroup(partition.group);
   partitions.value = partitions.value.filter((item) => item.id !== partition.id);
   selectedId.value = partitions.value.at(-1)?.id ?? racks.value.at(-1)?.id ?? null;
+  markSceneDirty();
 }
 
 function findFreePosition(width: number, depth: number) {
@@ -1004,6 +1074,7 @@ function applyRoomDimensions() {
     clampPartitionToRoom(partition);
     rebuildPartition(partition);
   }
+  markSceneDirty();
 }
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
@@ -1032,6 +1103,7 @@ function removeSelected() {
   racks.value = racks.value.filter((rack) => rack.id !== id);
   for (const annotation of annotations.value.filter((item) => item.itemId === id)) removeAnnotation(annotation.id);
   selectedId.value = racks.value.at(-1)?.id ?? null;
+  markSceneDirty();
 }
 
 function updatePosition(axis: 'x' | 'z', event: Event) {
@@ -1040,6 +1112,7 @@ function updatePosition(axis: 'x' | 'z', event: Event) {
   if (!rack || rack.locked || !Number.isFinite(input.valueAsNumber)) return;
   rack.group.position[axis] = input.valueAsNumber;
   clampRackToRoom(rack);
+  markSceneDirty();
 }
 
 function triggerImport() {
@@ -1101,6 +1174,7 @@ function importModel(event: Event) {
         locked: false,
       });
       selectedId.value = id;
+      markSceneDirty();
     }, () => {
       importError.value = '无法读取此 GLB 模型，请确认文件完整后重试。';
     });
@@ -1115,7 +1189,13 @@ function addAnnotation() {
   const rack = selectedRack.value;
   const title = annotationTitle.value.trim();
   if (!rack || !title) return;
-  const id = createId();
+  attachAnnotation(rack, createId(), title, annotationDescription.value.trim());
+  annotationTitle.value = '';
+  annotationDescription.value = '';
+  markSceneDirty();
+}
+
+function attachAnnotation(rack: RackItem, id: string, title: string, description: string) {
   const element = document.createElement('div');
   element.className = 'scene-annotation';
   const pointerMark = document.createElement('span');
@@ -1126,10 +1206,10 @@ function addAnnotation() {
   const heading = document.createElement('strong');
   heading.textContent = title;
   content.appendChild(heading);
-  if (annotationDescription.value.trim()) {
-    const description = document.createElement('small');
-    description.textContent = annotationDescription.value.trim();
-    content.appendChild(description);
+  if (description) {
+    const descriptionElement = document.createElement('small');
+    descriptionElement.textContent = description;
+    content.appendChild(descriptionElement);
   }
   element.append(pointerMark, content);
   const label = markRaw(new CSS2DObject(element));
@@ -1139,11 +1219,9 @@ function addAnnotation() {
     id,
     itemId: rack.id,
     title,
-    description: annotationDescription.value.trim(),
+    description,
     label,
   });
-  annotationTitle.value = '';
-  annotationDescription.value = '';
 }
 
 function removeAnnotation(id: string) {
@@ -1151,10 +1229,268 @@ function removeAnnotation(id: string) {
   if (!annotation) return;
   annotation.label.parent?.remove(annotation.label);
   annotations.value = annotations.value.filter((item) => item.id !== id);
+  markSceneDirty();
 }
 
 function createId() {
   return globalThis.crypto?.randomUUID?.() ?? `item-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function markSceneDirty() {
+  saveStatus.value = '未保存';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isRoomWallSide(value: unknown): value is RoomWallSide {
+  return value === 'north' || value === 'south' || value === 'east' || value === 'west';
+}
+
+function isSceneDocument(value: unknown): value is SceneDocument {
+  if (!isRecord(value) || value.format !== 'nexus-space-studio' || value.version !== 1) return false;
+  if (!isRecord(value.room) || !Array.isArray(value.racks) || !Array.isArray(value.partitions) || !Array.isArray(value.annotations)) return false;
+  const { width, length, height } = value.room;
+  if (!isFiniteInRange(width, 4, 40) || !isFiniteInRange(length, 4, 40) || !isFiniteInRange(height, 2.5, 12)) return false;
+  if (!value.racks.every(isSceneRack) || !value.partitions.every(isScenePartition) || !value.annotations.every(isSceneAnnotation)) return false;
+  const roomWallSides = value.partitions.flatMap((partition) => isRecord(partition) && isRoomWallSide(partition.roomWallSide) ? [partition.roomWallSide] : []);
+  if (roomWallSides.length !== 4 || new Set(roomWallSides).size !== 4) return false;
+  const rackIds = value.racks.map((rack) => rack.id);
+  const objectIds = [...rackIds, ...value.partitions.map((partition) => partition.id)];
+  if (new Set(objectIds).size !== objectIds.length) return false;
+  const annotationIds = value.annotations.map((annotation) => annotation.id);
+  if (new Set(annotationIds).size !== annotationIds.length) return false;
+  return value.annotations.every((annotation) => rackIds.includes(annotation.itemId));
+}
+
+function isSceneRack(value: unknown): value is SceneRack {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
+  if (value.kind !== 'rack' && value.kind !== 'imported') return false;
+  if (!isFiniteInRange(value.width, 0.01, 40) || !isFiniteInRange(value.depth, 0.01, 40) || !isFiniteInRange(value.height, 0.01, 20)) return false;
+  if (!isFiniteInRange(value.x, -100, 100) || !isFiniteInRange(value.z, -100, 100) || typeof value.locked !== 'boolean') return false;
+  return value.kind !== 'imported' || isRecord(value.modelAsset);
+}
+
+function isScenePartition(value: unknown): value is ScenePartition {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
+  if (!isFiniteInRange(value.length, 2, 40) || !isFiniteInRange(value.thickness, 0.01, 1)) return false;
+  if ((value.rotation !== 0 && value.rotation !== 1) || !isFiniteInRange(value.x, -100, 100) || !isFiniteInRange(value.z, -100, 100)) return false;
+  if (typeof value.fullSpan !== 'boolean' || typeof value.locked !== 'boolean') return false;
+  if (value.roomWallSide !== null && !isRoomWallSide(value.roomWallSide)) return false;
+  if (!isWallMaterialType(String(value.wallMaterialType)) || typeof value.wallColor !== 'string' || !/^#[\da-f]{6}$/i.test(value.wallColor)) return false;
+  return Array.isArray(value.doors) && value.doors.every((door) => {
+    return isRecord(door)
+      && typeof door.id === 'string'
+      && typeof door.doorOpen === 'boolean'
+      && isFiniteInRange(door.doorOffset, -40, 40);
+  });
+}
+
+function isSceneAnnotation(value: unknown): value is Omit<Annotation, 'label'> {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.itemId === 'string'
+    && typeof value.title === 'string'
+    && value.title.length <= 256
+    && typeof value.description === 'string'
+    && value.description.length <= 4000;
+}
+
+function isFiniteInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+async function serializeScene(): Promise<SceneDocument> {
+  const serializedRacks: SceneRack[] = [];
+  for (const rack of racks.value) {
+    const serializedRack: SceneRack = {
+      id: rack.id,
+      name: rack.name,
+      kind: rack.kind,
+      width: rack.width,
+      depth: rack.depth,
+      height: rack.height,
+      x: rack.group.position.x,
+      z: rack.group.position.z,
+      locked: rack.locked,
+    };
+    if (rack.kind === 'imported') {
+      const modelRoot = new THREE.Group();
+      for (const child of rack.group.children) {
+        if (!(child instanceof CSS2DObject)) modelRoot.add(child.clone(true));
+      }
+      const exportedModel = await gltfExporter.parseAsync(modelRoot, { embedImages: true });
+      if (exportedModel instanceof ArrayBuffer) throw new Error('导出导入模型时返回了无效的数据格式。');
+      serializedRack.modelAsset = exportedModel;
+    }
+    serializedRacks.push(serializedRack);
+  }
+  return {
+    format: 'nexus-space-studio',
+    version: 1,
+    room: { width: room.width, length: room.length, height: room.height },
+    racks: serializedRacks,
+    partitions: partitions.value.map((partition) => ({
+      id: partition.id,
+      name: partition.name,
+      length: partition.length,
+      thickness: partition.thickness,
+      rotation: partition.rotation,
+      x: partition.x,
+      z: partition.z,
+      fullSpan: partition.fullSpan,
+      locked: partition.locked,
+      roomWallSide: partition.roomWallSide,
+      wallMaterialType: partition.wallMaterialType,
+      wallColor: partition.wallColor,
+      doors: partition.doors.map((door) => ({ ...door })),
+    })),
+    annotations: annotations.value.map(({ id, itemId, title, description }) => ({ id, itemId, title, description })),
+  };
+}
+
+async function saveSceneToBrowser() {
+  sceneFileError.value = '';
+  try {
+    const serializedScene = await serializeScene();
+    localStorage.setItem(localSceneStorageKey, JSON.stringify(serializedScene));
+    saveStatus.value = '已保存';
+  } catch (error) {
+    console.error('Unable to save the scene in browser storage.', error);
+    sceneFileError.value = error instanceof DOMException && error.name === 'QuotaExceededError'
+      ? '浏览器本地空间不足，请使用“导出”保存场景文件。'
+      : '保存场景失败，请尝试导出文件。';
+  }
+}
+
+async function exportSceneFile() {
+  sceneFileError.value = '';
+  try {
+    const serializedScene = await serializeScene();
+    const blob = new Blob([JSON.stringify(serializedScene, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.href = url;
+    link.download = `nexus-space-scene-${timestamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    saveStatus.value = '已导出';
+  } catch (error) {
+    console.error('Unable to export the scene file.', error);
+    sceneFileError.value = '导出场景失败，请检查导入模型是否可正常读取。';
+  }
+}
+
+function triggerSceneImport() {
+  sceneFileError.value = '';
+  sceneFileInput.value?.click();
+}
+
+function importSceneFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!window.confirm('导入场景会替换当前场景，尚未保存的编辑将丢失。确定继续吗？')) {
+    input.value = '';
+    return;
+  }
+  sceneFileError.value = '';
+  file.text()
+    .then((text) => {
+      const parsed: unknown = JSON.parse(text);
+      if (!isSceneDocument(parsed)) throw new Error('场景文件格式无效或版本不受支持。');
+      return loadSceneDocument(parsed);
+    })
+    .then(() => {
+      saveStatus.value = '已导入';
+    })
+    .catch((error: unknown) => {
+      console.error('Unable to import the scene file.', error);
+      sceneFileError.value = error instanceof Error ? error.message : '导入场景失败，请检查文件后重试。';
+    })
+    .finally(() => {
+      input.value = '';
+    });
+}
+
+async function loadSceneDocument(documentData: SceneDocument) {
+  const loadedRacks: RackItem[] = [];
+  for (const rackData of documentData.racks) {
+    let group: THREE.Group;
+    if (rackData.kind === 'imported') {
+      const gltf = await new Promise<GLTF>((resolve, reject) => {
+        gltfLoader.parse(JSON.stringify(rackData.modelAsset), '', resolve, reject);
+      });
+      group = new THREE.Group();
+      group.add(gltf.scene);
+    } else {
+      group = buildRack(rackData.name, rackData.id).group;
+    }
+    group.name = rackData.name;
+    group.position.set(rackData.x, 0.035, rackData.z);
+    group.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.userData.itemId = rackData.id;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    loadedRacks.push({
+      id: rackData.id,
+      name: rackData.name,
+      kind: rackData.kind,
+      group: markRaw(group),
+      width: rackData.width,
+      depth: rackData.depth,
+      height: rackData.height,
+      x: rackData.x,
+      z: rackData.z,
+      locked: rackData.locked,
+    });
+  }
+
+  const loadedPartitions = documentData.partitions.map((partitionData) => reactive({
+    ...partitionData,
+    group: markRaw(new THREE.Group()),
+    doors: partitionData.doors.map((door) => ({ ...door })),
+  }));
+  for (const item of [...racks.value, ...partitions.value]) {
+    scene.remove(item.group);
+    disposeGroup(item.group);
+  }
+  for (const annotation of annotations.value) annotation.label.parent?.remove(annotation.label);
+  annotations.value = [];
+  racks.value = [];
+  partitions.value = [];
+  room.width = documentData.room.width;
+  room.length = documentData.room.length;
+  room.height = documentData.room.height;
+  roomDraft.width = room.width;
+  roomDraft.length = room.length;
+  roomDraft.height = room.height;
+  buildRoom();
+
+  partitions.value = loadedPartitions;
+  for (const partition of partitions.value) {
+    scene.add(partition.group);
+    clampPartitionToRoom(partition);
+    rebuildPartition(partition);
+  }
+  racks.value = loadedRacks;
+  for (const rack of racks.value) {
+    scene.add(rack.group);
+    clampRackToRoom(rack);
+  }
+  for (const annotation of documentData.annotations) {
+    const rack = racks.value.find((item) => item.id === annotation.itemId);
+    if (rack) attachAnnotation(rack, annotation.id, annotation.title, annotation.description);
+  }
+  selectedId.value = null;
 }
 
 async function loadFreeRackModel() {
@@ -1231,6 +1567,7 @@ function moveRack(event: PointerEvent) {
     rack.group.position.x = Math.round(point.x / step) * step;
     rack.group.position.z = Math.round(point.z / step) * step;
     clampRackToRoom(rack);
+    markSceneDirty();
     return;
   }
   const partition = activeDrag.kind === 'partition' ? partitions.value.find((item) => item.id === activeDrag?.id) : null;
@@ -1239,6 +1576,7 @@ function moveRack(event: PointerEvent) {
     partition.x = Math.round(point.x / step) * step;
     partition.z = Math.round(point.z / step) * step;
     clampPartitionToRoom(partition);
+    markSceneDirty();
   }
 }
 
@@ -1353,17 +1691,33 @@ onMounted(async () => {
     assetError.value = '在线免费模型暂不可用，已切换为内置机柜。';
     console.error('Unable to load the CC0 rack model.', error);
   }
-  addRack();
-  addRack();
-  addRack();
-  addRack();
-  racks.value[0].group.position.set(-2.2, 0.035, -1.75);
-  racks.value[1].group.position.set(-0.95, 0.035, -1.75);
-  racks.value[2].group.position.set(0.95, 0.035, -1.75);
-  racks.value[3].group.position.set(2.2, 0.035, -1.75);
-  for (const rack of racks.value) {
-    rack.x = rack.group.position.x;
-    rack.z = rack.group.position.z;
+  let restoredLocalScene = false;
+  try {
+    const savedScene = localStorage.getItem(localSceneStorageKey);
+    if (savedScene) {
+      const parsed: unknown = JSON.parse(savedScene);
+      if (!isSceneDocument(parsed)) throw new Error('浏览器中保存的场景格式无效。');
+      await loadSceneDocument(parsed);
+      saveStatus.value = '已载入';
+      restoredLocalScene = true;
+    }
+  } catch (error) {
+    console.error('Unable to restore the saved scene from browser storage.', error);
+    sceneFileError.value = error instanceof Error ? error.message : '载入本地场景失败。';
+  }
+  if (!restoredLocalScene) {
+    addRack();
+    addRack();
+    addRack();
+    addRack();
+    racks.value[0].group.position.set(-2.2, 0.035, -1.75);
+    racks.value[1].group.position.set(-0.95, 0.035, -1.75);
+    racks.value[2].group.position.set(0.95, 0.035, -1.75);
+    racks.value[3].group.position.set(2.2, 0.035, -1.75);
+    for (const rack of racks.value) {
+      rack.x = rack.group.position.x;
+      rack.z = rack.group.position.z;
+    }
   }
   selectedId.value = null;
 });
@@ -1453,6 +1807,12 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .apply-button:hover { background: rgba(91, 174, 170, .18); }
 .dimension-hint { margin-top: 10px; color: #697983; font-size: 9px; line-height: 1.5; }
 .tiny-grid { color: #6bb9b5; margin-right: 5px; }
+.scene-file-section { padding-top: 14px; padding-bottom: 14px; }
+.scene-file-section .section-title { margin-bottom: 8px; }
+.scene-file-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.scene-file-actions button { min-width: 0; height: 30px; border: 1px solid rgba(172,199,211,.13); border-radius: 3px; background: rgba(255,255,255,.025); color: #a9c8c7; font-size: 9px; cursor: pointer; }
+.scene-file-actions button:hover { border-color: rgba(131,217,212,.4); background: rgba(91,174,170,.08); }
+.scene-file-section > p { margin: 7px 0 0; color: #70818a; font-size: 8px; line-height: 1.5; }
 .inventory-section { padding-top: 17px; }
 .count-pill { margin-left: auto; color: #8ccbc6; font-size: 9px; padding: 3px 6px; background: rgba(98, 188, 184, .11); border-radius: 3px; font-variant-numeric: tabular-nums; }
 .object-list { max-height: 207px; overflow-y: auto; margin: 0 -7px; padding: 0 3px; }
