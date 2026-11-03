@@ -325,6 +325,23 @@
               <input type="color" :value="lighting.fillColor" :disabled="!lighting.fillEnabled" aria-label="补光颜色" @input="updateLightingColor('fillColor', $event)">
             </label>
 
+            <div class="lighting-subheading">天花板灯具</div>
+            <label class="lighting-toggle"><input type="checkbox" :checked="ceilingLighting.enabled" @change="updateCeilingToggle($event)"><span>开启顶灯</span></label>
+            <label class="lighting-toggle"><input type="checkbox" :checked="ceilingLighting.showFixtures" @change="updateCeilingFixtureVisibility($event)"><span>显示灯具模型</span></label>
+            <label class="lighting-range">
+              <span>灯具间距 <strong>{{ ceilingLighting.spacing.toFixed(1) }} m · {{ ceilingFixtureCount }} 盏</strong></span>
+              <input type="range" min="2" max="8" step="0.5" :value="ceilingLighting.spacing" aria-label="天花板灯具间距" @input="updateCeilingNumber('spacing', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>顶灯亮度 <strong>{{ ceilingLighting.intensity.toFixed(1) }}</strong></span>
+              <input type="range" min="0" max="20" step="0.5" :value="ceilingLighting.intensity" :disabled="!ceilingLighting.enabled" aria-label="顶灯亮度" @input="updateCeilingNumber('intensity', $event)">
+            </label>
+            <label class="lighting-range">
+              <span>色温 <strong>{{ ceilingLighting.colorTemperature }} K</strong></span>
+              <input type="range" min="3000" max="6500" step="100" :value="ceilingLighting.colorTemperature" :disabled="!ceilingLighting.enabled" aria-label="顶灯色温" @input="updateCeilingNumber('colorTemperature', $event)">
+            </label>
+            <p class="lighting-help">灯板按房间尺寸自动均布；面光不单独投射阴影。</p>
+
             <label class="lighting-toggle"><input type="checkbox" :checked="lighting.shadowsEnabled" @change="updateLightingToggle('shadowsEnabled', $event)"><span>启用阴影</span></label>
             <label class="lighting-range">
               <span>曝光度 <strong>{{ lighting.exposure.toFixed(2) }}</strong></span>
@@ -368,6 +385,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
 type RackItem = {
   id: string;
@@ -398,6 +416,14 @@ type LightingSettings = {
   fillColor: string;
   shadowsEnabled: boolean;
   exposure: number;
+};
+
+type CeilingLightingSettings = {
+  enabled: boolean;
+  showFixtures?: boolean;
+  spacing: number;
+  intensity: number;
+  colorTemperature: number;
 };
 
 type PartitionItem = {
@@ -468,6 +494,7 @@ type SceneDocument = {
   partitions: ScenePartition[];
   annotations: Array<Omit<Annotation, 'label'>>;
   lighting?: LightingSettings;
+  ceilingLighting?: CeilingLightingSettings;
 };
 
 const viewport = ref<HTMLDivElement | null>(null);
@@ -490,6 +517,18 @@ const defaultLightingSettings: LightingSettings = {
   exposure: 1.15,
 };
 const lighting = reactive({ ...defaultLightingSettings });
+const defaultCeilingLightingSettings: Required<CeilingLightingSettings> = {
+  enabled: true,
+  showFixtures: true,
+  spacing: 3.5,
+  intensity: 6,
+  colorTemperature: 4000,
+};
+const ceilingLighting = reactive({ ...defaultCeilingLightingSettings });
+const ceilingFixtureCount = computed(() => (
+  Math.max(1, Math.floor(room.width / ceilingLighting.spacing))
+  * Math.max(1, Math.floor(room.length / ceilingLighting.spacing))
+));
 const racks = ref<RackItem[]>([]);
 const partitions = ref<PartitionItem[]>([]);
 const annotations = ref<Annotation[]>([]);
@@ -516,6 +555,8 @@ let floorPlane: THREE.Mesh;
 let hemisphereLight: THREE.HemisphereLight | null = null;
 let keyLight: THREE.DirectionalLight | null = null;
 let fillLight: THREE.DirectionalLight | null = null;
+let ceilingLightPanels: THREE.InstancedMesh | null = null;
+let ceilingAreaLights: THREE.RectAreaLight[] = [];
 let freeRackPrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
@@ -635,7 +676,99 @@ function buildRoom() {
   for (const z of [-halfL, halfL]) {
     makeBox(roomGroup, room.width, 0.08, 0.08, ceilingBars, 0, wallHeight, z);
   }
+  ceilingLightPanels = null;
+  ceilingAreaLights = [];
+  createCeilingFixtures(roomGroup);
   scene.add(roomGroup, roomOutline);
+}
+
+function evenlySpacedPositions(size: number, spacing: number) {
+  const count = Math.max(1, Math.floor(size / spacing));
+  return Array.from({ length: count }, (_, index) => -size / 2 + ((index + 1) * size) / (count + 1));
+}
+
+function colorTemperatureHex(kelvin: number) {
+  const temperature = kelvin / 100;
+  const red = temperature <= 66 ? 255 : 329.698727446 * (temperature - 60) ** -0.1332047592;
+  const green = temperature <= 66
+    ? 99.4708025861 * Math.log(temperature) - 161.1195681661
+    : 288.1221695283 * (temperature - 60) ** -0.0755148492;
+  const blue = temperature >= 66
+    ? 255
+    : temperature <= 19
+      ? 0
+      : 138.5177312231 * Math.log(temperature - 10) - 305.0447927307;
+  const hex = [red, green, blue]
+    .map((channel) => Math.round(THREE.MathUtils.clamp(channel, 0, 255)).toString(16).padStart(2, '0'))
+    .join('');
+  return `#${hex}`;
+}
+
+function createCeilingFixtures(parent: THREE.Group) {
+  const xPositions = evenlySpacedPositions(room.width, ceilingLighting.spacing);
+  const zPositions = evenlySpacedPositions(room.length, ceilingLighting.spacing);
+  const lampColor = colorTemperatureHex(ceilingLighting.colorTemperature);
+  const panelMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb9c4c9,
+    emissive: lampColor,
+    emissiveIntensity: 1.2,
+    roughness: 0.32,
+    metalness: 0.08,
+  });
+  ceilingLightPanels = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.82, 0.055, 1.25),
+    panelMaterial,
+    xPositions.length * zPositions.length,
+  );
+  ceilingLightPanels.name = 'ceiling-light-panels';
+  ceilingLightPanels.castShadow = false;
+  ceilingLightPanels.receiveShadow = false;
+  const transform = new THREE.Object3D();
+  let panelIndex = 0;
+  for (const z of zPositions) {
+    for (const x of xPositions) {
+      transform.position.set(x, room.height - 0.12, z);
+      transform.updateMatrix();
+      ceilingLightPanels.setMatrixAt(panelIndex, transform.matrix);
+      panelIndex += 1;
+    }
+  }
+  ceilingLightPanels.instanceMatrix.needsUpdate = true;
+  parent.add(ceilingLightPanels);
+
+  const areaLightCount = Math.min(zPositions.length, 4);
+  for (let index = 0; index < areaLightCount; index += 1) {
+    const rowIndex = areaLightCount === 1
+      ? Math.floor((zPositions.length - 1) / 2)
+      : Math.round((index * (zPositions.length - 1)) / (areaLightCount - 1));
+    const areaLight = new THREE.RectAreaLight(
+      lampColor,
+      ceilingLighting.intensity,
+      room.width * 0.8,
+      Math.min(1.25, ceilingLighting.spacing * 0.55),
+    );
+    areaLight.position.set(0, room.height - 0.17, zPositions[rowIndex]);
+    areaLight.rotation.x = -Math.PI / 2;
+    parent.add(areaLight);
+    ceilingAreaLights.push(areaLight);
+  }
+  applyCeilingLighting();
+}
+
+function rebuildCeilingFixtures() {
+  if (!roomGroup) return;
+  if (ceilingLightPanels) {
+    roomGroup.remove(ceilingLightPanels);
+    ceilingLightPanels.geometry.dispose();
+    const materials = Array.isArray(ceilingLightPanels.material)
+      ? ceilingLightPanels.material
+      : [ceilingLightPanels.material];
+    for (const material of materials) material.dispose();
+  }
+  for (const areaLight of ceilingAreaLights) roomGroup.remove(areaLight);
+  ceilingLightPanels = null;
+  ceilingAreaLights = [];
+  createCeilingFixtures(roomGroup);
 }
 
 function roomWallLabel(side: RoomWallSide) {
@@ -1336,6 +1469,7 @@ function isSceneDocument(value: unknown): value is SceneDocument {
   if (!isRecord(value) || value.format !== 'nexus-space-studio' || value.version !== 1) return false;
   if (!isRecord(value.room) || !Array.isArray(value.racks) || !Array.isArray(value.partitions) || !Array.isArray(value.annotations)) return false;
   if (value.lighting !== undefined && !isLightingSettings(value.lighting)) return false;
+  if (value.ceilingLighting !== undefined && !isCeilingLightingSettings(value.ceilingLighting)) return false;
   const { width, length, height } = value.room;
   if (!isFiniteInRange(width, 4, 40) || !isFiniteInRange(length, 4, 40) || !isFiniteInRange(height, 2.5, 12)) return false;
   if (!value.racks.every(isSceneRack) || !value.partitions.every(isScenePartition) || !value.annotations.every(isSceneAnnotation)) return false;
@@ -1363,6 +1497,15 @@ function isLightingSettings(value: unknown): value is LightingSettings {
     && typeof value.fillColor === 'string' && /^#[\da-f]{6}$/i.test(value.fillColor)
     && typeof value.shadowsEnabled === 'boolean'
     && isFiniteInRange(value.exposure, 0.6, 1.6);
+}
+
+function isCeilingLightingSettings(value: unknown): value is CeilingLightingSettings {
+  return isRecord(value)
+    && typeof value.enabled === 'boolean'
+    && (value.showFixtures === undefined || typeof value.showFixtures === 'boolean')
+    && isFiniteInRange(value.spacing, 2, 8)
+    && isFiniteInRange(value.intensity, 0, 20)
+    && isFiniteInRange(value.colorTemperature, 3000, 6500);
 }
 
 function isSceneRack(value: unknown): value is SceneRack {
@@ -1406,6 +1549,7 @@ function isFiniteInRange(value: unknown, min: number, max: number): value is num
 type LightingNumericKey = 'ambientIntensity' | 'keyIntensity' | 'keyAzimuth' | 'keyElevation' | 'fillIntensity' | 'exposure';
 type LightingColorKey = 'ambientColor' | 'keyColor' | 'fillColor';
 type LightingToggleKey = 'keyEnabled' | 'fillEnabled' | 'shadowsEnabled';
+type CeilingLightingNumericKey = 'spacing' | 'intensity' | 'colorTemperature';
 
 const lightingRanges: Record<LightingNumericKey, { min: number; max: number }> = {
   ambientIntensity: { min: 0, max: 4 },
@@ -1435,6 +1579,53 @@ function updateLightingToggle(key: LightingToggleKey, event: Event) {
   lighting[key] = (event.currentTarget as HTMLInputElement).checked;
   applyLightingSettings();
   markSceneDirty();
+}
+
+function updateCeilingNumber(key: CeilingLightingNumericKey, event: Event) {
+  const input = event.currentTarget as HTMLInputElement;
+  const ranges: Record<CeilingLightingNumericKey, { min: number; max: number }> = {
+    spacing: { min: 2, max: 8 },
+    intensity: { min: 0, max: 20 },
+    colorTemperature: { min: 3000, max: 6500 },
+  };
+  if (!Number.isFinite(input.valueAsNumber)) return;
+  ceilingLighting[key] = THREE.MathUtils.clamp(input.valueAsNumber, ranges[key].min, ranges[key].max);
+  if (key === 'spacing') rebuildCeilingFixtures();
+  else applyCeilingLighting();
+  markSceneDirty();
+}
+
+function updateCeilingToggle(event: Event) {
+  ceilingLighting.enabled = (event.currentTarget as HTMLInputElement).checked;
+  applyCeilingLighting();
+  markSceneDirty();
+}
+
+function updateCeilingFixtureVisibility(event: Event) {
+  ceilingLighting.showFixtures = (event.currentTarget as HTMLInputElement).checked;
+  applyCeilingLighting();
+  markSceneDirty();
+}
+
+function applyCeilingLighting() {
+  if (!ceilingLightPanels) return;
+  const enabled = ceilingLighting.enabled;
+  const color = colorTemperatureHex(ceilingLighting.colorTemperature);
+  ceilingLightPanels.visible = enabled && ceilingLighting.showFixtures;
+  const panelMaterials = Array.isArray(ceilingLightPanels.material)
+    ? ceilingLightPanels.material
+    : [ceilingLightPanels.material];
+  for (const material of panelMaterials) {
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.emissive.set(color);
+      material.emissiveIntensity = 1.2;
+    }
+  }
+  for (const areaLight of ceilingAreaLights) {
+    areaLight.visible = enabled;
+    areaLight.color.set(color);
+    areaLight.intensity = ceilingLighting.intensity;
+  }
 }
 
 function applyLightingSettings() {
@@ -1508,6 +1699,7 @@ async function serializeScene(): Promise<SceneDocument> {
     })),
     annotations: annotations.value.map(({ id, itemId, title, description }) => ({ id, itemId, title, description })),
     lighting: { ...lighting },
+    ceilingLighting: { ...ceilingLighting },
   };
 }
 
@@ -1634,6 +1826,7 @@ async function loadSceneDocument(documentData: SceneDocument) {
   roomDraft.length = room.length;
   roomDraft.height = room.height;
   Object.assign(lighting, documentData.lighting ?? defaultLightingSettings);
+  Object.assign(ceilingLighting, { ...defaultCeilingLightingSettings, ...documentData.ceilingLighting });
   applyLightingSettings();
   buildRoom();
 
@@ -1783,6 +1976,7 @@ function animate() {
 onMounted(async () => {
   await nextTick();
   if (!viewport.value) return;
+  RectAreaLightUniformsLib.init();
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111a22);
   scene.fog = new THREE.Fog(0x111a22, 24, 62);
@@ -2168,6 +2362,7 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .lighting-color input:disabled { opacity: .4; cursor: not-allowed; }
 .lighting-toggle { display: flex; align-items: center; gap: 7px; color: #94a3a8; font-size: 8px; cursor: pointer; }
 .lighting-toggle input { margin: 0; accent-color: #75c4c0; }
+.lighting-help { margin: -2px 0 0; color: #71838a; font-size: 8px; line-height: 1.5; }
 .annotation-section { padding: 17px 18px 16px; }
 .annotation-heading { display: flex; align-items: center; justify-content: space-between; }
 .annotation-heading .section-title { margin-bottom: 12px; }
