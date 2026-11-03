@@ -153,7 +153,7 @@
           <div class="viewport-caption">
             <span class="caption-kicker">SPATIAL VIEW / 01</span>
             <strong>机房空间预览</strong>
-            <span>拖动机柜或隔板调整位置 · 滚轮缩放 · 右键旋转</span>
+            <span>先选择对象，再拖动已选对象移动 · 滚轮缩放 · 右键旋转</span>
           </div>
           <div class="axis-indicator"><span class="axis-y">Y</span><span class="axis-x">X</span><span class="axis-z">Z</span><i></i></div>
           <div class="view-scale"><span>0</span><i></i><span>5 m</span></div>
@@ -379,7 +379,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
@@ -543,6 +543,7 @@ const sceneFileError = ref('');
 
 const selectedRack = computed(() => racks.value.find((rack) => rack.id === selectedId.value) ?? null);
 const selectedPartition = computed(() => partitions.value.find((partition) => partition.id === selectedId.value) ?? null);
+watch(selectedId, updateSelectionOutline);
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
@@ -557,6 +558,7 @@ let keyLight: THREE.DirectionalLight | null = null;
 let fillLight: THREE.DirectionalLight | null = null;
 let ceilingLightPanels: THREE.InstancedMesh | null = null;
 let ceilingAreaLights: THREE.RectAreaLight[] = [];
+let selectionOutline: THREE.BoxHelper | null = null;
 let freeRackPrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
@@ -990,12 +992,14 @@ function rebuildPartition(partition: PartitionItem) {
   const openingWidth = partitionDoorWidth(partition);
   const doorHeight = Math.min(2.2, wallHeight - 0.12);
   const doorHeaderHeight = 0.09;
+  const capHeight = 0.045;
+  const wallBodyHeight = wallHeight - capHeight;
   const opensIntoRoom = partition.roomWallSide === null
     || partition.roomWallSide === 'north'
     || partition.roomWallSide === 'west';
 
   if (!partition.doors.length) {
-    makeBox(partition.group, length, wallHeight, partition.thickness, wallMaterial, 0, wallHeight / 2, 0);
+    makeBox(partition.group, length, wallBodyHeight, partition.thickness, wallMaterial, 0, wallBodyHeight / 2, 0);
   } else {
     let wallCursor = -halfLength;
     for (const door of partition.doors) {
@@ -1006,21 +1010,22 @@ function rebuildPartition(partition: PartitionItem) {
       makeBox(
         partition.group,
         wallSegmentLength,
-        wallHeight,
+        wallBodyHeight,
         partition.thickness,
         wallMaterial,
         (wallCursor + doorLeft) / 2,
-        wallHeight / 2,
+        wallBodyHeight / 2,
         0,
       );
+      const upperWallHeight = wallBodyHeight - doorHeight - doorHeaderHeight;
       makeBox(
         partition.group,
         openingWidth,
-        wallHeight - doorHeight - doorHeaderHeight,
+        upperWallHeight,
         partition.thickness,
         wallMaterial,
         doorCenter,
-        (wallHeight + doorHeight + doorHeaderHeight) / 2,
+        doorHeight + doorHeaderHeight + upperWallHeight / 2,
         0,
       );
       makeBox(partition.group, openingWidth + partition.thickness, doorHeaderHeight, partition.thickness + 0.025, trimMaterial, doorCenter, doorHeight + doorHeaderHeight / 2, 0);
@@ -1041,13 +1046,13 @@ function rebuildPartition(partition: PartitionItem) {
     }
 
     const finalWallLength = halfLength - wallCursor;
-    makeBox(partition.group, finalWallLength, wallHeight, partition.thickness, wallMaterial, (wallCursor + halfLength) / 2, wallHeight / 2, 0);
+    makeBox(partition.group, finalWallLength, wallBodyHeight, partition.thickness, wallMaterial, (wallCursor + halfLength) / 2, wallBodyHeight / 2, 0);
   }
 
   const baseMaterial = makeMaterial(0x617c83, 0.56, 0.46);
   makeBox(partition.group, length, 0.07, partition.thickness + 0.08, baseMaterial, 0, 0.035, 0);
   const capMaterial = makeMaterial(0x9bb7b7, 0.42, 0.36);
-  makeBox(partition.group, length, 0.045, partition.thickness + 0.025, capMaterial, 0, wallHeight - 0.0225, 0);
+  makeBox(partition.group, length, capHeight, partition.thickness + 0.025, capMaterial, 0, wallHeight - capHeight / 2, 0);
 
   partition.group.traverse((child) => {
     if (child instanceof THREE.Mesh) {
@@ -1310,6 +1315,24 @@ function clampRackToRoom(rack: RackItem) {
 
 function selectItem(id: string) {
   if (racks.value.some((rack) => rack.id === id) || partitions.value.some((partition) => partition.id === id)) selectedId.value = id;
+}
+
+function updateSelectionOutline() {
+  if (!scene) return;
+  if (selectionOutline) {
+    scene.remove(selectionOutline);
+    selectionOutline.geometry.dispose();
+    selectionOutline.material.dispose();
+    selectionOutline = null;
+  }
+  const selectedItem = racks.value.find((rack) => rack.id === selectedId.value)
+    ?? partitions.value.find((partition) => partition.id === selectedId.value);
+  if (!selectedItem) return;
+  selectionOutline = new THREE.BoxHelper(selectedItem.group, 0x72e2d5);
+  selectionOutline.material.transparent = true;
+  selectionOutline.material.opacity = 0.95;
+  selectionOutline.renderOrder = 2;
+  scene.add(selectionOutline);
 }
 
 function removeSelected() {
@@ -1890,13 +1913,20 @@ function onPointerDown(event: PointerEvent) {
   const hit = raycaster.intersectObjects(meshes, false)[0];
   if (!hit) {
     selectedId.value = null;
+    activeDrag = null;
+    controls.enabled = true;
     return;
   }
   const id = hit.object.userData.itemId as string | undefined;
   const rack = racks.value.find((item) => item.id === id);
   const partition = partitions.value.find((item) => item.id === id);
   if (!rack && !partition) return;
-  selectedId.value = id ?? null;
+  if (selectedId.value !== id) {
+    selectedId.value = id ?? null;
+    activeDrag = null;
+    controls.enabled = true;
+    return;
+  }
   if (rack?.locked || partition?.locked || partition?.roomWallSide) {
     activeDrag = null;
     controls.enabled = true;
@@ -1910,7 +1940,7 @@ function onPointerDown(event: PointerEvent) {
 }
 
 function moveRack(event: PointerEvent) {
-  if (!activeDrag) return;
+  if (!activeDrag || selectedId.value !== activeDrag.id) return;
   setPointer(event);
   raycaster.setFromCamera(pointer, camera);
   const point = raycaster.ray.intersectPlane(floorPlaneForDrag, new THREE.Vector3());
@@ -1969,6 +1999,7 @@ function resizeViewport() {
 function animate() {
   animationFrame = window.requestAnimationFrame(animate);
   controls.update();
+  selectionOutline?.update();
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }
@@ -2083,6 +2114,12 @@ onBeforeUnmount(() => {
   if (animationFrame) window.cancelAnimationFrame(animationFrame);
   resizeObserver?.disconnect();
   window.removeEventListener('pointerup', onPointerUp);
+  if (selectionOutline) {
+    scene.remove(selectionOutline);
+    selectionOutline.geometry.dispose();
+    selectionOutline.material.dispose();
+    selectionOutline = null;
+  }
   if (renderer) {
     renderer.domElement.removeEventListener('pointerdown', onPointerDown);
     renderer.domElement.removeEventListener('pointermove', onPointerMove);
