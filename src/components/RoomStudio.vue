@@ -18,6 +18,9 @@
         <button class="top-button subtle" type="button" @click="resetCamera()">
           <span class="button-icon">⌖</span> 重置视角
         </button>
+        <button class="top-button subtle undo-button" type="button" :disabled="isPreviewMode || historyBusy || undoCount === 0" title="撤销上一步（Ctrl+Z）" @click="undoScene">
+          <span class="button-icon">↶</span> 撤销 <small>{{ undoCount }}/30</small>
+        </button>
         <button v-if="!isPreviewMode" class="top-button primary" type="button" @click="addRack">
           <span class="plus">＋</span> 添加机柜
         </button>
@@ -67,7 +70,7 @@
             </select>
           </label>
           <p v-if="floorMaterialError" class="error-note">{{ floorMaterialError }}</p>
-          <div class="dimension-hint"><span class="tiny-grid">▦</span> 修改尺寸后，机柜贴地，隔板保持在房间范围内</div>
+          <div class="dimension-hint"><span class="tiny-grid">▦</span> 可拖动 XYZ 轴调整物体位置，机柜与隔板的水平位置保持在房间范围内</div>
         </section>
 
         <section class="side-section scene-file-section">
@@ -78,6 +81,7 @@
             <button type="button" @click="exportSceneFile">导出</button>
           </div>
           <p>保存到当前浏览器，或导出 JSON 文件备份并在其他设备导入。</p>
+          <p v-if="historyError" class="error-note">{{ historyError }}</p>
           <input ref="sceneFileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importSceneFile">
           <p v-if="sceneFileError" class="error-note">{{ sceneFileError }}</p>
         </section>
@@ -96,7 +100,7 @@
             >
               <button class="object-select" type="button" @click="selectItem(rack.id)">
                 <span class="object-thumb"><span class="rack-glyph"></span></span>
-                <span class="object-copy"><strong>{{ rack.name }}</strong><small>{{ rack.kind === 'imported' ? '导入模型' : '标准机柜' }} · {{ rack.height.toFixed(1) }} m</small></span>
+                <span class="object-copy"><strong>{{ rack.name }}</strong><small>{{ rackKindLabel(rack.kind) }} · {{ rack.height.toFixed(1) }} m</small></span>
                 <span class="object-chevron">›</span>
               </button>
               <button class="lock-toggle" :class="{ active: rack.locked }" type="button" :aria-label="rack.locked ? `解锁${rack.name}` : `锁定${rack.name}`" :title="rack.locked ? '解锁物体' : '锁定物体'" @click.stop="toggleLock(rack.id)">
@@ -167,7 +171,7 @@
           <div class="viewport-caption">
             <span class="caption-kicker">SPATIAL VIEW / 01</span>
             <strong>机房空间预览</strong>
-            <span>{{ isPreviewMode ? '预览模式：仅查看场景 · 滚轮缩放 · 右键旋转' : '先选择对象，再拖动已选对象移动 · 滚轮缩放 · 右键旋转' }}</span>
+            <span>{{ isPreviewMode ? '预览模式：仅查看场景 · 滚轮缩放 · 右键旋转' : '选中物体后，在右侧切换移动、旋转或缩放工具' }}</span>
           </div>
           <div class="axis-indicator"><span class="axis-y">Y</span><span class="axis-x">X</span><span class="axis-z">Z</span><i></i></div>
           <div class="view-scale"><span>0</span><i></i><span>5 m</span></div>
@@ -175,7 +179,7 @@
           <div v-if="selectedRack || selectedPartition" class="selection-hud">
             <span class="selection-dot"></span>
             <span><small>当前选择</small><strong>{{ selectedRack?.name ?? selectedPartition?.name }}</strong></span>
-            <span class="hud-coordinates">X {{ (selectedRack?.x ?? selectedPartition?.x ?? 0).toFixed(1) }} <i>/</i> Z {{ (selectedRack?.z ?? selectedPartition?.z ?? 0).toFixed(1) }}</span>
+            <span class="hud-coordinates">X {{ (selectedRack?.x ?? selectedPartition?.x ?? 0).toFixed(1) }} <i>/</i> Y {{ (selectedRack?.y ?? selectedPartition?.y ?? 0).toFixed(1) }} <i>/</i> Z {{ (selectedRack?.z ?? selectedPartition?.z ?? 0).toFixed(1) }}</span>
           </div>
         </div>
         <div class="viewport-footer">
@@ -186,7 +190,7 @@
 
       <aside v-if="!isPreviewMode" class="sidebar right-sidebar">
         <div class="right-heading">
-          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? '机柜属性' : '场景工具' }}</h2></div>
+          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? `${isDeviceKind(selectedRack.kind) ? '设备' : '机柜'}属性` : '场景工具' }}</h2></div>
           <span class="more-dots">···</span>
         </div>
 
@@ -200,12 +204,28 @@
             </button>
           </div>
           <section class="property-section">
-            <div class="section-title"><span>{{ selectedPartition.roomWallSide ? '边界位置' : '位置坐标' }}</span><span class="edit-hint">{{ selectedPartition.roomWallSide ? '固定贴合房间边界' : '拖动隔板可快速调整' }}</span></div>
+            <div class="section-title"><span>{{ selectedPartition.roomWallSide ? '边界位置' : '位置坐标' }}</span><span class="edit-hint">{{ selectedPartition.roomWallSide ? '固定贴合房间边界' : '拖动 XYZ 轴可调整' }}</span></div>
             <div v-if="selectedPartition.roomWallSide" class="size-row"><span>墙面</span><strong>{{ roomWallLabel(selectedPartition.roomWallSide) }}</strong></div>
             <div v-else class="coordinate-grid">
               <label><span>X</span><input :value="selectedPartition.x.toFixed(1)" type="number" step="0.1" :disabled="selectedPartition.locked" @change="updatePartitionPosition('x', $event)"></label>
-              <label><span>Y</span><input value="0.0" type="number" disabled></label>
+              <label><span>Y</span><input :value="selectedPartition.y.toFixed(1)" type="number" step="0.1" :disabled="selectedPartition.locked" @change="updatePartitionPosition('y', $event)"></label>
               <label><span>Z</span><input :value="selectedPartition.z.toFixed(1)" type="number" step="0.1" :disabled="selectedPartition.locked" @change="updatePartitionPosition('z', $event)"></label>
+            </div>
+          </section>
+          <section v-if="!selectedPartition.roomWallSide" class="property-section transform-properties">
+            <div class="section-title"><span>模型变换</span><span class="unit-tag">XYZ</span></div>
+            <div class="transform-mode-switch" role="group" aria-label="模型变换模式">
+              <button type="button" :class="{ active: transformMode === 'translate' }" @click="setTransformMode('translate')">移动</button>
+              <button type="button" :class="{ active: transformMode === 'rotate' }" @click="setTransformMode('rotate')">旋转</button>
+              <button type="button" :class="{ active: transformMode === 'scale' }" @click="setTransformMode('scale')">缩放</button>
+            </div>
+            <div class="transform-value-heading">旋转角度 <small>°</small></div>
+            <div class="coordinate-grid transform-value-grid">
+              <label v-for="axis in transformAxes" :key="`partition-rotation-${axis}`"><span>{{ axis.toUpperCase() }}</span><input :value="selectedPartition.transform.rotation[axis].toFixed(0)" type="number" min="-360" max="360" step="1" :disabled="selectedPartition.locked" @change="updateTransformValue('rotation', axis, $event)"></label>
+            </div>
+            <div class="transform-value-heading">缩放比例 <small>0.1–10</small></div>
+            <div class="coordinate-grid transform-value-grid">
+              <label v-for="axis in transformAxes" :key="`partition-scale-${axis}`"><span>{{ axis.toUpperCase() }}</span><input :value="selectedPartition.transform.scale[axis].toFixed(2)" type="number" min="0.1" max="10" step="0.1" :disabled="selectedPartition.locked" @change="updateTransformValue('scale', axis, $event)"></label>
             </div>
           </section>
           <section class="property-section">
@@ -277,36 +297,55 @@
         <template v-else-if="selectedRack">
           <div class="selected-card">
             <div class="selected-preview"><span class="rack-glyph large"></span><span class="preview-glow"></span></div>
-            <div class="selected-name"><span class="selected-type">{{ selectedRack.kind === 'imported' ? 'IMPORT MODEL' : 'SERVER RACK' }}</span><strong>{{ selectedRack.name }}</strong><small>对象 ID · {{ selectedRack.id.slice(-6).toUpperCase() }}</small></div>
+            <div class="selected-name"><span class="selected-type">{{ isDeviceKind(selectedRack.kind) ? 'DEVICE' : selectedRack.kind === 'imported' ? 'IMPORT MODEL' : 'SERVER RACK' }}</span><strong>{{ selectedRack.name }}</strong><small>对象 ID · {{ selectedRack.id.slice(-6).toUpperCase() }}</small></div>
             <button class="selected-lock-button" :class="{ active: selectedRack.locked }" type="button" :aria-label="selectedRack.locked ? '解锁物体' : '锁定物体'" @click="toggleLock(selectedRack.id)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="selectedRack.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
               <span>{{ selectedRack.locked ? '解锁' : '锁定' }}</span>
             </button>
           </div>
           <section class="property-section">
-            <div class="section-title"><span>位置坐标</span><span class="edit-hint">拖动模型可快速调整</span></div>
+            <div class="section-title"><span>位置坐标</span><span class="edit-hint">拖动 XYZ 轴可调整</span></div>
             <div class="coordinate-grid">
               <label><span>X</span><input :value="selectedRack.x.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('x', $event)"></label>
-              <label><span>Y</span><input value="0.0" type="number" disabled></label>
+              <label><span>Y</span><input :value="selectedRack.y.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('y', $event)"></label>
               <label><span>Z</span><input :value="selectedRack.z.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('z', $event)"></label>
+            </div>
+          </section>
+          <section class="property-section transform-properties">
+            <div class="section-title"><span>模型变换</span><span class="unit-tag">XYZ</span></div>
+            <div class="transform-mode-switch" role="group" aria-label="模型变换模式">
+              <button type="button" :class="{ active: transformMode === 'translate' }" @click="setTransformMode('translate')">移动</button>
+              <button type="button" :class="{ active: transformMode === 'rotate' }" @click="setTransformMode('rotate')">旋转</button>
+              <button type="button" :class="{ active: transformMode === 'scale' }" @click="setTransformMode('scale')">缩放</button>
+            </div>
+            <div class="transform-value-heading">旋转角度 <small>°</small></div>
+            <div class="coordinate-grid transform-value-grid">
+              <label v-for="axis in transformAxes" :key="`rack-rotation-${axis}`"><span>{{ axis.toUpperCase() }}</span><input :value="selectedRack.transform.rotation[axis].toFixed(0)" type="number" min="-360" max="360" step="1" :disabled="selectedRack.locked" @change="updateTransformValue('rotation', axis, $event)"></label>
+            </div>
+            <div class="transform-value-heading">缩放比例 <small>0.1–10</small></div>
+            <div class="coordinate-grid transform-value-grid">
+              <label v-for="axis in transformAxes" :key="`rack-scale-${axis}`"><span>{{ axis.toUpperCase() }}</span><input :value="selectedRack.transform.scale[axis].toFixed(2)" type="number" min="0.1" max="10" step="0.1" :disabled="selectedRack.locked" @change="updateTransformValue('scale', axis, $event)"></label>
             </div>
           </section>
           <section class="property-section dimension-properties">
             <div class="section-title"><span>模型尺寸</span><span class="unit-tag">m</span></div>
-            <div class="size-row"><span>宽度</span><strong>{{ selectedRack.width.toFixed(2) }} <small>m</small></strong></div>
-            <div class="size-row"><span>深度</span><strong>{{ selectedRack.depth.toFixed(2) }} <small>m</small></strong></div>
-            <div class="size-row"><span>高度</span><strong>{{ selectedRack.height.toFixed(2) }} <small>m</small></strong></div>
+            <div class="size-row"><span>宽度</span><strong>{{ (selectedRack.width * selectedRack.transform.scale.x).toFixed(2) }} <small>m</small></strong></div>
+            <div class="size-row"><span>深度</span><strong>{{ (selectedRack.depth * selectedRack.transform.scale.z).toFixed(2) }} <small>m</small></strong></div>
+            <div class="size-row"><span>高度</span><strong>{{ (selectedRack.height * selectedRack.transform.scale.y).toFixed(2) }} <small>m</small></strong></div>
           </section>
-          <button class="danger-button" type="button" @click="removeSelected"><span>⌫</span> 删除此机柜</button>
+          <button class="danger-button" type="button" @click="removeSelected"><span>⌫</span> 删除此对象</button>
         </template>
         <template v-else>
           <div class="tool-intro">
             <div class="tool-illustration"><span class="tool-cube"></span><i></i><b></b></div>
             <strong>构建你的空间</strong>
-            <p>添加机柜或导入模型，再点击场景中的对象查看属性。</p>
+            <p>添加机柜、设备或导入模型，再点击场景中的对象查看属性。</p>
           </div>
           <div class="quick-actions">
             <button type="button" @click="addRack"><span class="quick-icon">▤</span><span><strong>添加标准机柜</strong><small>快速放置到房间地板</small></span><b>＋</b></button>
+            <button type="button" @click="addDevice('camera')"><span class="quick-icon">◉</span><span><strong>添加摄像头</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
+            <button type="button" @click="addDevice('smoke-detector')"><span class="quick-icon">◌</span><span><strong>添加烟雾报警器</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
+            <button type="button" @click="addDevice('temperature-sensor')"><span class="quick-icon">⊙</span><span><strong>添加温度传感器</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
             <button type="button" @click="triggerImport"><span class="quick-icon upload">↑</span><span><strong>导入自定义模型</strong><small>支持 GLB 格式文件</small></span><b>↗</b></button>
           </div>
         </template>
@@ -434,21 +473,33 @@
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
+type DeviceKind = 'camera' | 'smoke-detector' | 'temperature-sensor';
+type RackKind = 'rack' | 'imported' | DeviceKind;
+type TransformMode = 'translate' | 'rotate' | 'scale';
+type TransformAxis = 'x' | 'y' | 'z';
+type ObjectTransform = {
+  rotation: Record<TransformAxis, number>;
+  scale: Record<TransformAxis, number>;
+};
+
 type RackItem = {
   id: string;
   name: string;
-  kind: 'rack' | 'imported';
+  kind: RackKind;
   group: THREE.Group;
   width: number;
   depth: number;
   height: number;
   x: number;
+  y: number;
   z: number;
+  transform: ObjectTransform;
   locked: boolean;
 };
 
@@ -497,7 +548,9 @@ type PartitionItem = {
   thickness: number;
   rotation: 0 | 1;
   x: number;
+  y: number;
   z: number;
+  transform: ObjectTransform;
   fullSpan: boolean;
   locked: boolean;
   roomWallSide: RoomWallSide | null;
@@ -525,12 +578,14 @@ type Annotation = {
 type SceneRack = {
   id: string;
   name: string;
-  kind: RackItem['kind'];
+  kind: RackKind;
   width: number;
   depth: number;
   height: number;
   x: number;
+  y?: number;
   z: number;
+  transform?: ObjectTransform;
   locked: boolean;
   modelAsset?: Record<string, unknown>;
 };
@@ -542,7 +597,9 @@ type ScenePartition = {
   thickness: number;
   rotation: 0 | 1;
   x: number;
+  y?: number;
   z: number;
+  transform?: ObjectTransform;
   fullSpan: boolean;
   locked: boolean;
   roomWallSide: RoomWallSide | null;
@@ -561,6 +618,11 @@ type SceneDocument = {
   lighting?: LightingSettings;
   ceilingLighting?: CeilingLightingSettings;
   floorMaterial?: FloorMaterialType;
+};
+
+type HistorySnapshot = {
+  document: SceneDocument;
+  selectedId: string | null;
 };
 
 const viewport = ref<HTMLDivElement | null>(null);
@@ -612,6 +674,11 @@ const racks = ref<RackItem[]>([]);
 const partitions = ref<PartitionItem[]>([]);
 const annotations = ref<Annotation[]>([]);
 const selectedId = ref<string | null>(null);
+const undoCount = ref(0);
+const historyBusy = ref(false);
+const historyError = ref('');
+const transformMode = ref<TransformMode>('translate');
+const transformAxes: TransformAxis[] = ['x', 'y', 'z'];
 const annotationTitle = ref('');
 const annotationDescription = ref('');
 const floorMaterialError = ref('');
@@ -623,13 +690,17 @@ const sceneFileError = ref('');
 
 const selectedRack = computed(() => racks.value.find((rack) => rack.id === selectedId.value) ?? null);
 const selectedPartition = computed(() => partitions.value.find((partition) => partition.id === selectedId.value) ?? null);
-watch(selectedId, updateSelectionOutline);
+watch(selectedId, () => {
+  updateSelectionOutline();
+  updateTransformControlsSelection();
+});
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let renderer: THREE.WebGLRenderer;
 let labelRenderer: CSS2DRenderer;
 let controls: OrbitControls;
+let transformControls: TransformControls | null = null;
 let roomGroup: THREE.Group;
 let roomOutline: THREE.Group;
 let floorPlane: THREE.Mesh;
@@ -640,19 +711,31 @@ let ceilingLightPanels: THREE.InstancedMesh | null = null;
 let ceilingAreaLights: THREE.RectAreaLight[] = [];
 let selectionOutline: THREE.BoxHelper | null = null;
 let freeRackPrototype: THREE.Group | null = null;
+let freeDevicePrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
-let activeDrag: { kind: 'rack' | 'partition'; id: string } | null = null;
+let activeDrag: { kind: 'rack' | 'device' | 'partition'; id: string } | null = null;
 let activePointerId: number | null = null;
 let applyingSceneView = false;
 let appliedCameraConfig: SceneViewSettings | null = null;
 let floorPlaneForDrag: THREE.Plane;
+const dragOffset = new THREE.Vector3();
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const gltfLoader = new GLTFLoader();
 const gltfExporter = new GLTFExporter();
 const localSceneStorageKey = 'nexus-space-studio:scene:v1';
 const cameraConfigStorageKey = 'nexus-space-studio:camera-view:v1';
+const historyLimit = 30;
+const historyCaptureDelay = 300;
+const historyUndoStack: HistorySnapshot[] = [];
+let historyInitialized = false;
+let historyGroupOpen = false;
+let historyInteractionActive = false;
+let historyCaptureTimer: number | null = null;
+let historySnapshotPromise: Promise<HistorySnapshot | null> | null = null;
+let historyPendingRecords: Promise<void>[] = [];
+const historyModelAssetCache = new Map<string, Record<string, unknown>>();
 const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalness: number }> = {
   paint: { roughness: 0.72, metalness: 0.12 },
   concrete: { roughness: 0.94, metalness: 0.02 },
@@ -662,6 +745,85 @@ const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalne
 
 function makeMaterial(color: number, roughness = 0.7, metalness = 0) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+}
+
+function createObjectTransform(): ObjectTransform {
+  return {
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+  };
+}
+
+function cloneObjectTransform(transform?: ObjectTransform): ObjectTransform {
+  const defaults = createObjectTransform();
+  return transform
+    ? {
+        rotation: { ...defaults.rotation, ...transform.rotation },
+        scale: { ...defaults.scale, ...transform.scale },
+      }
+    : defaults;
+}
+
+function applyObjectTransform(group: THREE.Group, transform: ObjectTransform) {
+  group.rotation.set(
+    THREE.MathUtils.degToRad(transform.rotation.x),
+    THREE.MathUtils.degToRad(transform.rotation.y),
+    THREE.MathUtils.degToRad(transform.rotation.z),
+  );
+  group.scale.set(transform.scale.x, transform.scale.y, transform.scale.z);
+}
+
+function normalizeDegrees(degrees: number) {
+  const normalized = THREE.MathUtils.euclideanModulo(degrees + 180, 360) - 180;
+  return Number(normalized.toFixed(1));
+}
+
+function syncObjectTransform(group: THREE.Group, transform: ObjectTransform) {
+  for (const axis of transformAxes) {
+    transform.rotation[axis] = normalizeDegrees(THREE.MathUtils.radToDeg(group.rotation[axis]));
+    transform.scale[axis] = clampNumber(group.scale[axis], 0.1, 10, 1);
+  }
+  applyObjectTransform(group, transform);
+}
+
+function updateTransformValue(
+  property: 'rotation' | 'scale',
+  axis: TransformAxis,
+  event: Event,
+) {
+  const rack = selectedRack.value;
+  const partition = selectedPartition.value;
+  const item = rack ?? partition;
+  const input = event.target as HTMLInputElement;
+  if (!item || item.locked || partition?.roomWallSide || !Number.isFinite(input.valueAsNumber)) return;
+  const value = property === 'rotation'
+    ? clampNumber(input.valueAsNumber, -360, 360, item.transform.rotation[axis])
+    : clampNumber(input.valueAsNumber, 0.1, 10, item.transform.scale[axis]);
+  item.transform[property][axis] = property === 'rotation' ? normalizeDegrees(value) : value;
+  applyObjectTransform(item.group, item.transform);
+  if (rack) clampRackToRoom(rack);
+  if (partition) clampPartitionToRoom(partition);
+  markSceneDirty();
+}
+
+function setTransformMode(mode: TransformMode) {
+  transformMode.value = mode;
+  transformControls?.setMode(mode);
+}
+
+function isDeviceKind(kind: unknown): kind is DeviceKind {
+  return kind === 'camera' || kind === 'smoke-detector' || kind === 'temperature-sensor';
+}
+
+function rackKindLabel(kind: RackKind) {
+  const labels: Record<RackKind, string> = {
+    rack: '标准机柜',
+    imported: '导入模型',
+    camera: '摄像头',
+    'smoke-detector': '烟雾报警器',
+    'temperature-sensor': '温度传感器',
+  };
+  return labels[kind];
 }
 
 function createFloorPatternTexture(pattern: 'tile' | 'rubber') {
@@ -755,7 +917,9 @@ function toggleLock(id: string) {
   if (item.locked && activeDrag?.id === id) {
     activeDrag = null;
     controls.enabled = true;
+    finishContinuousHistoryChange();
   }
+  updateTransformControlsSelection();
 }
 
 function makeBox(
@@ -960,7 +1124,9 @@ function createRoomWalls() {
       thickness: 0.14,
       rotation: horizontal ? 0 : 1,
       x: 0,
+      y: 0,
       z: 0,
+      transform: createObjectTransform(),
       fullSpan: true,
       locked: false,
       roomWallSide: side,
@@ -1047,6 +1213,82 @@ function buildRack(name: string, id: string) {
   return { group, width, depth, height };
 }
 
+function buildDevice(kind: DeviceKind, name: string, id: string) {
+  const group = new THREE.Group();
+  group.name = name;
+  const model = new THREE.Group();
+
+  if (freeDevicePrototype) {
+    model.add(freeDevicePrototype.clone(true));
+    group.userData.sharedAssets = true;
+  } else if (kind === 'camera') {
+    const body = makeMaterial(0x26343b, 0.48, 0.55);
+    const lens = new THREE.MeshStandardMaterial({ color: 0x142a37, metalness: 0.72, roughness: 0.18 });
+    makeBox(model, 0.16, 0.025, 0.16, body, 0, 0.045, 0);
+    makeBox(model, 0.035, 0.09, 0.035, body, 0, -0.01, 0);
+    makeBox(model, 0.12, 0.055, 0.085, body, 0, -0.075, 0.025);
+    const lensMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.024, 24), lens);
+    lensMesh.rotation.x = Math.PI / 2;
+    lensMesh.position.set(0, -0.075, 0.08);
+    model.add(lensMesh);
+  } else if (kind === 'smoke-detector') {
+    const shell = makeMaterial(0xe4e9e9, 0.82);
+    const trim = makeMaterial(0x7d8a8e, 0.7);
+    const indicator = new THREE.MeshStandardMaterial({ color: 0xf05a55, emissive: 0x631c1a, emissiveIntensity: 0.45 });
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.105, 0.012, 32), trim);
+    base.position.y = -0.018;
+    model.add(base);
+    const shellMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.098, 0.105, 0.045, 32), shell);
+    shellMesh.position.y = 0.008;
+    model.add(shellMesh);
+    const light = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 8), indicator);
+    light.position.set(0.048, 0.034, 0.025);
+    model.add(light);
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (index / 8) * Math.PI * 2;
+      const vent = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.002, 8), trim);
+      vent.position.set(Math.cos(angle) * 0.072, 0.031, Math.sin(angle) * 0.072);
+      model.add(vent);
+    }
+  } else {
+    const casing = makeMaterial(0xd5dfe2, 0.68, 0.08);
+    const screen = makeMaterial(0x1b2b32, 0.38, 0.12);
+    const indicator = new THREE.MeshStandardMaterial({ color: 0x48d7a2, emissive: 0x145e43, emissiveIntensity: 0.6 });
+    makeBox(model, 0.14, 0.12, 0.045, casing, 0, 0, 0);
+    makeBox(model, 0.082, 0.045, 0.004, screen, 0, 0.026, 0.0245);
+    const statusLight = new THREE.Mesh(new THREE.SphereGeometry(0.006, 12, 8), indicator);
+    statusLight.position.set(0.048, -0.038, 0.025);
+    model.add(statusLight);
+    for (let index = 0; index < 3; index += 1) {
+      makeBox(model, 0.055, 0.003, 0.003, screen, 0, -0.022 - index * 0.008, 0.024);
+    }
+  }
+
+  model.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxDimension = Math.max(size.x, size.y, size.z);
+  const targetSize = 0.24;
+  const scale = targetSize / maxDimension;
+  const center = bounds.getCenter(new THREE.Vector3());
+  model.scale.multiplyScalar(scale);
+  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+  group.add(model);
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.userData.itemId = id;
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  return {
+    group,
+    width: size.x * scale,
+    depth: size.z * scale,
+    height: size.y * scale,
+  };
+}
+
 function addRack() {
   const id = createId();
   const index = racks.value.length + 1;
@@ -1062,7 +1304,37 @@ function addRack() {
     ...built,
     group: markRaw(built.group),
     x: position.x,
+    y: 0.035,
     z: position.z,
+    transform: createObjectTransform(),
+    locked: false,
+  });
+  selectedId.value = id;
+  markSceneDirty();
+}
+
+function addDevice(kind: DeviceKind) {
+  if (!scene) return;
+  const id = createId();
+  const index = racks.value.filter((rack) => isDeviceKind(rack.kind)).length;
+  const name = `${rackKindLabel(kind)} ${String(racks.value.filter((rack) => rack.kind === kind).length + 1).padStart(2, '0')}`;
+  const built = buildDevice(kind, name, id);
+  const row = Math.floor(index / 3);
+  const position = {
+    x: (index % 3 - 1) * 0.55,
+    y: room.height + 0.2 + Math.floor(row / 3) * 0.35,
+    z: (row % 3 - 1) * 0.55,
+  };
+  built.group.position.set(position.x, position.y, position.z);
+  scene.add(built.group);
+  racks.value.push({
+    id,
+    name,
+    kind,
+    ...built,
+    group: markRaw(built.group),
+    ...position,
+    transform: createObjectTransform(),
     locked: false,
   });
   selectedId.value = id;
@@ -1084,7 +1356,9 @@ function addPartition() {
     thickness: 0.14,
     rotation: 0,
     x: position.x,
+    y: 0,
     z: position.z,
+    transform: createObjectTransform(),
     fullSpan: true,
     locked: false,
     roomWallSide: null,
@@ -1132,8 +1406,11 @@ function rebuildPartition(partition: PartitionItem) {
     partition.group.remove(child);
     disposeGroup(child);
   }
-  partition.group.position.set(partition.x, 0, partition.z);
-  partition.group.rotation.y = partition.rotation * Math.PI / 2;
+  partition.group.position.set(partition.x, partition.y, partition.z);
+  applyObjectTransform(partition.group, partition.transform);
+  const geometry = new THREE.Group();
+  geometry.rotation.y = partition.rotation * Math.PI / 2;
+  partition.group.add(geometry);
   const length = partition.length;
   const halfLength = length / 2;
   const halfThickness = partition.thickness / 2;
@@ -1163,7 +1440,7 @@ function rebuildPartition(partition: PartitionItem) {
     || partition.roomWallSide === 'west';
 
   if (!partition.doors.length) {
-    makeBox(partition.group, length, wallBodyHeight, partition.thickness, wallMaterial, 0, wallBodyHeight / 2, 0);
+    makeBox(geometry, length, wallBodyHeight, partition.thickness, wallMaterial, 0, wallBodyHeight / 2, 0);
   } else {
     let wallCursor = -halfLength;
     for (const door of partition.doors) {
@@ -1172,7 +1449,7 @@ function rebuildPartition(partition: PartitionItem) {
       const doorRight = doorCenter + openingWidth / 2;
       const wallSegmentLength = doorLeft - wallCursor;
       makeBox(
-        partition.group,
+        geometry,
         wallSegmentLength,
         wallBodyHeight,
         partition.thickness,
@@ -1183,7 +1460,7 @@ function rebuildPartition(partition: PartitionItem) {
       );
       const upperWallHeight = wallBodyHeight - doorHeight - doorHeaderHeight;
       makeBox(
-        partition.group,
+        geometry,
         openingWidth,
         upperWallHeight,
         partition.thickness,
@@ -1192,9 +1469,9 @@ function rebuildPartition(partition: PartitionItem) {
         doorHeight + doorHeaderHeight + upperWallHeight / 2,
         0,
       );
-      makeBox(partition.group, openingWidth + partition.thickness, doorHeaderHeight, partition.thickness + 0.025, trimMaterial, doorCenter, doorHeight + doorHeaderHeight / 2, 0);
+      makeBox(geometry, openingWidth + partition.thickness, doorHeaderHeight, partition.thickness + 0.025, trimMaterial, doorCenter, doorHeight + doorHeaderHeight / 2, 0);
       for (const side of [-1, 1]) {
-        makeBox(partition.group, 0.06, doorHeight, partition.thickness + 0.035, trimMaterial, doorCenter + side * openingWidth / 2, doorHeight / 2, 0);
+        makeBox(geometry, 0.06, doorHeight, partition.thickness + 0.035, trimMaterial, doorCenter + side * openingWidth / 2, doorHeight / 2, 0);
       }
 
       const hinge = new THREE.Group();
@@ -1213,20 +1490,20 @@ function rebuildPartition(partition: PartitionItem) {
       makeBox(hinge, 0.025, 0.12, 0.025, trimMaterial, leafDirection * (leafWidth - 0.1), 1.02, 0.04);
       makeBox(hinge, 0.018, doorHeight - 0.18, 0.018, markerMaterial, leafDirection * 0.08, (doorHeight - 0.18) / 2, 0.035);
       hinge.rotation.y = door.doorOpen ? (hingeOnRight ? 1 : -1) * Math.PI / 2 : 0;
-      partition.group.add(hinge);
+      geometry.add(hinge);
       wallCursor = doorRight;
     }
 
     const finalWallLength = halfLength - wallCursor;
-    makeBox(partition.group, finalWallLength, wallBodyHeight, partition.thickness, wallMaterial, (wallCursor + halfLength) / 2, wallBodyHeight / 2, 0);
+    makeBox(geometry, finalWallLength, wallBodyHeight, partition.thickness, wallMaterial, (wallCursor + halfLength) / 2, wallBodyHeight / 2, 0);
   }
 
   const baseMaterial = makeMaterial(0x617c83, 0.56, 0.46);
-  makeBox(partition.group, length, 0.07, partition.thickness + 0.08, baseMaterial, 0, 0.035, 0);
+  makeBox(geometry, length, 0.07, partition.thickness + 0.08, baseMaterial, 0, 0.035, 0);
   const capMaterial = makeMaterial(0x9bb7b7, 0.42, 0.36);
-  makeBox(partition.group, length, capHeight, partition.thickness + 0.025, capMaterial, 0, wallHeight - capHeight / 2, 0);
+  makeBox(geometry, length, capHeight, partition.thickness + 0.025, capMaterial, 0, wallHeight - capHeight / 2, 0);
 
-  partition.group.traverse((child) => {
+  geometry.traverse((child) => {
     if (child instanceof THREE.Mesh) {
       child.userData.itemId = partition.id;
       child.castShadow = true;
@@ -1307,7 +1584,8 @@ function clampPartitionToRoom(partition: PartitionItem) {
     partition.length = partitionMaxLength(partition);
     partition.x = partition.roomWallSide === 'west' ? -room.width / 2 : partition.roomWallSide === 'east' ? room.width / 2 : 0;
     partition.z = partition.roomWallSide === 'north' ? -room.length / 2 : partition.roomWallSide === 'south' ? room.length / 2 : 0;
-    partition.group.position.set(partition.x, 0, partition.z);
+    partition.y = 0;
+    partition.group.position.set(partition.x, partition.y, partition.z);
     return;
   }
   partition.length = Math.min(partition.length, partitionMaxLength(partition));
@@ -1320,10 +1598,10 @@ function clampPartitionToRoom(partition: PartitionItem) {
     : Math.max(0, room.length / 2 - partition.length / 2);
   partition.x = THREE.MathUtils.clamp(partition.x, -limitX, limitX);
   partition.z = THREE.MathUtils.clamp(partition.z, -limitZ, limitZ);
-  partition.group.position.set(partition.x, 0, partition.z);
+  partition.group.position.set(partition.x, partition.y, partition.z);
 }
 
-function updatePartitionPosition(axis: 'x' | 'z', event: Event) {
+function updatePartitionPosition(axis: 'x' | 'y' | 'z', event: Event) {
   const partition = selectedPartition.value;
   const input = event.target as HTMLInputElement;
   if (!partition || partition.roomWallSide || partition.locked || !Number.isFinite(input.valueAsNumber)) return;
@@ -1519,12 +1797,18 @@ function clampNumber(value: number, min: number, max: number, fallback: number) 
 }
 
 function clampRackToRoom(rack: RackItem) {
+  if (isDeviceKind(rack.kind)) {
+    rack.x = rack.group.position.x;
+    rack.y = rack.group.position.y;
+    rack.z = rack.group.position.z;
+    return;
+  }
   const limitX = Math.max(0, room.width / 2 - rack.width / 2 - 0.08);
   const limitZ = Math.max(0, room.length / 2 - rack.depth / 2 - 0.08);
   rack.group.position.x = THREE.MathUtils.clamp(rack.group.position.x, -limitX, limitX);
   rack.group.position.z = THREE.MathUtils.clamp(rack.group.position.z, -limitZ, limitZ);
-  rack.group.position.y = 0.035;
   rack.x = rack.group.position.x;
+  rack.y = rack.group.position.y;
   rack.z = rack.group.position.z;
 }
 
@@ -1545,6 +1829,7 @@ function setPreviewMode() {
   }
   activeDrag = null;
   activePointerId = null;
+  finishContinuousHistoryChange();
   if (controls) controls.enabled = true;
   selectedId.value = null;
 }
@@ -1567,6 +1852,54 @@ function updateSelectionOutline() {
   scene.add(selectionOutline);
 }
 
+function updateTransformControlsSelection() {
+  if (!transformControls) return;
+  const rack = racks.value.find((item) => item.id === selectedId.value);
+  if (rack && !rack.locked) {
+    transformControls.showX = true;
+    transformControls.showY = true;
+    transformControls.showZ = true;
+    transformControls.attach(rack.group);
+    return;
+  }
+  const partition = partitions.value.find((item) => item.id === selectedId.value);
+  if (partition && !partition.locked && !partition.roomWallSide) {
+    transformControls.showX = true;
+    transformControls.showY = true;
+    transformControls.showZ = true;
+    transformControls.attach(partition.group);
+    return;
+  }
+  transformControls.detach();
+}
+
+function handleTransformObjectChange() {
+  if (!transformControls?.object) return;
+  const rack = racks.value.find((item) => item.id === selectedId.value);
+  if (rack && transformControls.object === rack.group) {
+    if (rack.locked) return;
+    syncObjectTransform(rack.group, rack.transform);
+    clampRackToRoom(rack);
+    markSceneDirty();
+    return;
+  }
+  const partition = partitions.value.find((item) => item.id === selectedId.value);
+  if (partition && transformControls.object === partition.group && !partition.locked && !partition.roomWallSide) {
+    syncObjectTransform(partition.group, partition.transform);
+    partition.x = partition.group.position.x;
+    partition.y = partition.group.position.y;
+    partition.z = partition.group.position.z;
+    clampPartitionToRoom(partition);
+    markSceneDirty();
+  }
+}
+
+function handleTransformDraggingChange(event: { value: boolean }) {
+  controls.enabled = !event.value;
+  if (event.value) beginContinuousHistoryChange();
+  else finishContinuousHistoryChange();
+}
+
 function removeSelected() {
   if (!selectedRack.value || !scene) return;
   const id = selectedRack.value.id;
@@ -1578,12 +1911,18 @@ function removeSelected() {
   markSceneDirty();
 }
 
-function updatePosition(axis: 'x' | 'z', event: Event) {
+function updatePosition(axis: 'x' | 'y' | 'z', event: Event) {
   const rack = selectedRack.value;
   const input = event.target as HTMLInputElement;
   if (!rack || rack.locked || !Number.isFinite(input.valueAsNumber)) return;
   rack.group.position[axis] = input.valueAsNumber;
-  clampRackToRoom(rack);
+  if (isDeviceKind(rack.kind)) {
+    rack.x = rack.group.position.x;
+    rack.y = rack.group.position.y;
+    rack.z = rack.group.position.z;
+  } else {
+    clampRackToRoom(rack);
+  }
   markSceneDirty();
 }
 
@@ -1642,7 +1981,9 @@ function importModel(event: Event) {
         depth: itemDepth,
         height: targetHeight,
         x: position.x,
+        y: 0.035,
         z: position.z,
+        transform: createObjectTransform(),
         locked: false,
       });
       selectedId.value = id;
@@ -1710,6 +2051,152 @@ function createId() {
 
 function markSceneDirty() {
   saveStatus.value = '未保存';
+  if (!historyInitialized) return;
+  if (!historyGroupOpen) {
+    historyGroupOpen = true;
+    const previousSnapshot = historySnapshotPromise;
+    if (previousSnapshot) {
+      const record = previousSnapshot.then((snapshot) => {
+        if (!snapshot) return;
+        historyUndoStack.push(snapshot);
+        if (historyUndoStack.length > historyLimit) historyUndoStack.shift();
+        undoCount.value = Math.min(historyUndoStack.length + historyPendingRecords.length, historyLimit);
+      });
+      historyPendingRecords.push(record);
+      void record.then(() => {
+        historyPendingRecords = historyPendingRecords.filter((pending) => pending !== record);
+        undoCount.value = Math.min(historyUndoStack.length + historyPendingRecords.length, historyLimit);
+      });
+    }
+  }
+  if (historyCaptureTimer !== null) window.clearTimeout(historyCaptureTimer);
+  historyCaptureTimer = window.setTimeout(() => {
+    historyCaptureTimer = null;
+    if (historyInteractionActive) return;
+    historyGroupOpen = false;
+    void captureHistorySnapshot();
+  }, historyCaptureDelay);
+}
+
+function beginContinuousHistoryChange() {
+  if (historyGroupOpen && !historyInteractionActive) {
+    if (historyCaptureTimer !== null) {
+      window.clearTimeout(historyCaptureTimer);
+      historyCaptureTimer = null;
+    }
+    historyGroupOpen = false;
+    void captureHistorySnapshot();
+  }
+  historyInteractionActive = true;
+  if (historyCaptureTimer !== null) {
+    window.clearTimeout(historyCaptureTimer);
+    historyCaptureTimer = null;
+  }
+}
+
+function finishContinuousHistoryChange() {
+  if (!historyInteractionActive) return;
+  historyInteractionActive = false;
+  if (historyCaptureTimer !== null) {
+    window.clearTimeout(historyCaptureTimer);
+    historyCaptureTimer = null;
+  }
+  if (historyGroupOpen) {
+    historyGroupOpen = false;
+    void captureHistorySnapshot();
+  }
+}
+
+function captureHistorySnapshot() {
+  const selectedAtCapture = selectedId.value;
+  const capture = serializeScene(historyModelAssetCache)
+    .then((document) => {
+      historyError.value = '';
+      return { document, selectedId: selectedAtCapture };
+    })
+    .catch((error: unknown) => {
+      console.error('Unable to capture an undo history snapshot.', error);
+      historyError.value = error instanceof Error ? `无法记录撤销历史：${error.message}` : '无法记录撤销历史。';
+      return null;
+    });
+  historySnapshotPromise = capture;
+  return capture;
+}
+
+function initializeUndoHistory() {
+  historyUndoStack.length = 0;
+  historyPendingRecords = [];
+  historyGroupOpen = false;
+  historyInteractionActive = false;
+  undoCount.value = 0;
+  historyError.value = '';
+  historyInitialized = true;
+  void captureHistorySnapshot();
+}
+
+function restoreHistoryModelAssetCache(snapshot: HistorySnapshot) {
+  historyModelAssetCache.clear();
+  for (const rack of snapshot.document.racks) {
+    if (rack.kind === 'imported' && rack.modelAsset) {
+      historyModelAssetCache.set(rack.id, rack.modelAsset);
+    }
+  }
+}
+
+async function undoScene() {
+  if (historyBusy.value || isPreviewMode.value) return;
+  historyBusy.value = true;
+  finishContinuousHistoryChange();
+  activeDrag = null;
+  if (activePointerId !== null && renderer.domElement.hasPointerCapture(activePointerId)) {
+    renderer.domElement.releasePointerCapture(activePointerId);
+  }
+  activePointerId = null;
+  transformControls?.detach();
+  controls.enabled = true;
+  if (historyCaptureTimer !== null) {
+    window.clearTimeout(historyCaptureTimer);
+    historyCaptureTimer = null;
+  }
+  historyGroupOpen = false;
+  try {
+    await Promise.all(historyPendingRecords);
+    const previousSnapshot = historyUndoStack.at(-1);
+    if (!previousSnapshot) return;
+    historyUndoStack.pop();
+    undoCount.value = historyUndoStack.length;
+    const cameraPosition = camera.position.clone();
+    const cameraTarget = controls.target.clone();
+    restoreHistoryModelAssetCache(previousSnapshot);
+    await loadSceneDocument(previousSnapshot.document);
+    const selectedExists = previousSnapshot.selectedId
+      && (racks.value.some((rack) => rack.id === previousSnapshot.selectedId)
+        || partitions.value.some((partition) => partition.id === previousSnapshot.selectedId));
+    selectedId.value = selectedExists ? previousSnapshot.selectedId : null;
+    camera.position.copy(cameraPosition);
+    controls.target.copy(cameraTarget);
+    controls.update();
+    syncSceneViewFromCamera();
+    historySnapshotPromise = Promise.resolve(previousSnapshot);
+    historyError.value = '';
+    saveStatus.value = '未保存';
+  } catch (error) {
+    console.error('Unable to undo the last scene change.', error);
+    historyError.value = error instanceof Error ? `撤销失败：${error.message}` : '撤销失败。';
+  } finally {
+    historyBusy.value = false;
+    undoCount.value = Math.min(historyUndoStack.length + historyPendingRecords.length, historyLimit);
+  }
+}
+
+function handleHistoryKeydown(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.key.toLowerCase() !== 'z') return;
+  if (isPreviewMode.value || historyBusy.value || (!historyUndoStack.length && !historyPendingRecords.length)) return;
+  const target = event.target;
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable) return;
+  if (target instanceof HTMLInputElement && ['text', 'search', 'email', 'password', 'url', 'tel'].includes(target.type)) return;
+  event.preventDefault();
+  void undoScene();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1777,9 +2264,11 @@ function isSceneViewSettings(value: unknown): value is SceneViewSettings {
 function isSceneRack(value: unknown): value is SceneRack {
   if (!isRecord(value)) return false;
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
-  if (value.kind !== 'rack' && value.kind !== 'imported') return false;
+  if (value.kind !== 'rack' && value.kind !== 'imported' && !isDeviceKind(value.kind)) return false;
   if (!isFiniteInRange(value.width, 0.01, 40) || !isFiniteInRange(value.depth, 0.01, 40) || !isFiniteInRange(value.height, 0.01, 20)) return false;
   if (!isFiniteInRange(value.x, -100, 100) || !isFiniteInRange(value.z, -100, 100) || typeof value.locked !== 'boolean') return false;
+  if (value.y !== undefined && !isFiniteInRange(value.y, -100, 100)) return false;
+  if (value.transform !== undefined && !isObjectTransform(value.transform)) return false;
   return value.kind !== 'imported' || isRecord(value.modelAsset);
 }
 
@@ -1787,6 +2276,8 @@ function isScenePartition(value: unknown): value is ScenePartition {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
   if (!isFiniteInRange(value.length, 2, 40) || !isFiniteInRange(value.thickness, 0.01, 1)) return false;
   if ((value.rotation !== 0 && value.rotation !== 1) || !isFiniteInRange(value.x, -100, 100) || !isFiniteInRange(value.z, -100, 100)) return false;
+  if (value.y !== undefined && !isFiniteInRange(value.y, -100, 100)) return false;
+  if (value.transform !== undefined && !isObjectTransform(value.transform)) return false;
   if (typeof value.fullSpan !== 'boolean' || typeof value.locked !== 'boolean') return false;
   if (value.roomWallSide !== null && !isRoomWallSide(value.roomWallSide)) return false;
   if (!isWallMaterialType(String(value.wallMaterialType)) || typeof value.wallColor !== 'string' || !/^#[\da-f]{6}$/i.test(value.wallColor)) return false;
@@ -1798,6 +2289,14 @@ function isScenePartition(value: unknown): value is ScenePartition {
       && (door.reverseInstall === undefined || typeof door.reverseInstall === 'boolean')
       && (door.hingeSide === undefined || isDoorHingeSide(door.hingeSide));
   });
+}
+
+function isObjectTransform(value: unknown): value is ObjectTransform {
+  if (!isRecord(value) || !isRecord(value.rotation) || !isRecord(value.scale)) return false;
+  return transformAxes.every((axis) => (
+    isFiniteInRange(value.rotation[axis], -360, 360)
+    && isFiniteInRange(value.scale[axis], 0.1, 10)
+  ));
 }
 
 function isDoorHingeSide(value: unknown): value is DoorHingeSide {
@@ -1939,7 +2438,7 @@ function applyLightingSettings() {
   renderer.toneMappingExposure = lighting.exposure;
 }
 
-async function serializeScene(): Promise<SceneDocument> {
+async function serializeScene(modelAssetCache?: Map<string, Record<string, unknown>>): Promise<SceneDocument> {
   const serializedRacks: SceneRack[] = [];
   for (const rack of racks.value) {
     const serializedRack: SceneRack = {
@@ -1950,17 +2449,31 @@ async function serializeScene(): Promise<SceneDocument> {
       depth: rack.depth,
       height: rack.height,
       x: rack.group.position.x,
+      y: rack.group.position.y,
       z: rack.group.position.z,
+      transform: cloneObjectTransform(rack.transform),
       locked: rack.locked,
     };
     if (rack.kind === 'imported') {
-      const modelRoot = new THREE.Group();
-      for (const child of rack.group.children) {
-        if (!(child instanceof CSS2DObject)) modelRoot.add(child.clone(true));
+      const cachedAsset = modelAssetCache?.get(rack.id);
+      if (cachedAsset) {
+        serializedRack.modelAsset = cachedAsset;
+      } else {
+        const modelRoot = new THREE.Group();
+        for (const child of rack.group.children) {
+          if (!(child instanceof CSS2DObject)) modelRoot.add(child.clone(true));
+        }
+        const exportedModel = await gltfExporter.parseAsync(modelRoot, { embedImages: true });
+        if (exportedModel instanceof ArrayBuffer) throw new Error('导出导入模型时返回了无效的数据格式。');
+        serializedRack.modelAsset = exportedModel;
+        if (modelAssetCache) {
+          modelAssetCache.set(rack.id, exportedModel);
+          if (modelAssetCache.size > historyLimit) {
+            const oldestModelId = modelAssetCache.keys().next().value;
+            if (oldestModelId) modelAssetCache.delete(oldestModelId);
+          }
+        }
       }
-      const exportedModel = await gltfExporter.parseAsync(modelRoot, { embedImages: true });
-      if (exportedModel instanceof ArrayBuffer) throw new Error('导出导入模型时返回了无效的数据格式。');
-      serializedRack.modelAsset = exportedModel;
     }
     serializedRacks.push(serializedRack);
   }
@@ -1976,7 +2489,9 @@ async function serializeScene(): Promise<SceneDocument> {
       thickness: partition.thickness,
       rotation: partition.rotation,
       x: partition.x,
+      y: partition.y,
       z: partition.z,
+      transform: cloneObjectTransform(partition.transform),
       fullSpan: partition.fullSpan,
       locked: partition.locked,
       roomWallSide: partition.roomWallSide,
@@ -2044,9 +2559,11 @@ function importSceneFile(event: Event) {
     .then((text) => {
       const parsed: unknown = JSON.parse(text);
       if (!isSceneDocument(parsed)) throw new Error('场景文件格式无效或版本不受支持。');
+      historyModelAssetCache.clear();
       return loadSceneDocument(parsed);
     })
     .then(() => {
+      markSceneDirty();
       saveStatus.value = '已导入';
     })
     .catch((error: unknown) => {
@@ -2068,11 +2585,16 @@ async function loadSceneDocument(documentData: SceneDocument) {
       });
       group = new THREE.Group();
       group.add(gltf.scene);
+    } else if (isDeviceKind(rackData.kind)) {
+      group = buildDevice(rackData.kind, rackData.name, rackData.id).group;
     } else {
       group = buildRack(rackData.name, rackData.id).group;
     }
     group.name = rackData.name;
-    group.position.set(rackData.x, 0.035, rackData.z);
+    const y = rackData.y ?? (isDeviceKind(rackData.kind) ? documentData.room.height + 0.2 : 0.035);
+    group.position.set(rackData.x, y, rackData.z);
+    const transform = cloneObjectTransform(rackData.transform);
+    applyObjectTransform(group, transform);
     group.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.userData.itemId = rackData.id;
@@ -2089,13 +2611,17 @@ async function loadSceneDocument(documentData: SceneDocument) {
       depth: rackData.depth,
       height: rackData.height,
       x: rackData.x,
+      y,
       z: rackData.z,
+      transform,
       locked: rackData.locked,
     });
   }
 
   const loadedPartitions = documentData.partitions.map((partitionData) => reactive({
     ...partitionData,
+    y: partitionData.y ?? 0,
+    transform: partitionData.roomWallSide ? createObjectTransform() : cloneObjectTransform(partitionData.transform),
     group: markRaw(new THREE.Group()),
     doors: partitionData.doors.map((door) => ({
       ...door,
@@ -2152,6 +2678,26 @@ async function loadFreeRackModel() {
   freeRackPrototype = gltf.scene;
 }
 
+async function loadFreeDeviceModel() {
+  const response = await fetch('/models/cassette-player.glb');
+  if (!response.ok) throw new Error(`Device model request failed: ${response.status}`);
+  const buffer = await response.arrayBuffer();
+  const gltf = await new Promise<GLTF>((resolve, reject) => {
+    gltfLoader.parse(buffer, '', resolve, reject);
+  });
+  const model = gltf.scene;
+  model.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxDimension = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(maxDimension) || maxDimension <= 0) throw new Error('Device model has invalid dimensions.');
+  const scale = 0.24 / maxDimension;
+  const center = bounds.getCenter(new THREE.Vector3());
+  model.scale.multiplyScalar(scale);
+  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+  freeDevicePrototype = model;
+}
+
 function disposeGroup(group: THREE.Object3D) {
   if (group.userData.sharedAssets) return;
   group.traverse((child) => {
@@ -2172,6 +2718,7 @@ function setPointer(event: PointerEvent) {
 
 function onPointerDown(event: PointerEvent) {
   if (isPreviewMode.value || event.button !== 0 || !renderer || !camera) return;
+  if (transformControls && (transformControls.dragging || transformControls.axis !== null)) return;
   setPointer(event);
   raycaster.setFromCamera(pointer, camera);
   const meshes = [...racks.value, ...partitions.value].flatMap((item) => {
@@ -2203,8 +2750,18 @@ function onPointerDown(event: PointerEvent) {
     controls.enabled = true;
     return;
   }
-  activeDrag = rack ? { kind: 'rack', id: rack.id } : partition ? { kind: 'partition', id: partition.id } : null;
-  floorPlaneForDrag = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.035);
+  if (rack && isDeviceKind(rack.kind)) {
+    activeDrag = { kind: 'device', id: rack.id };
+    floorPlaneForDrag = new THREE.Plane().setFromNormalAndCoplanarPoint(
+      camera.getWorldDirection(new THREE.Vector3()),
+      hit.point,
+    );
+    dragOffset.copy(rack.group.position).sub(hit.point);
+  } else {
+    activeDrag = rack ? { kind: 'rack', id: rack.id } : partition ? { kind: 'partition', id: partition.id } : null;
+    floorPlaneForDrag = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.035);
+  }
+  if (activeDrag) beginContinuousHistoryChange();
   controls.enabled = false;
   renderer.domElement.setPointerCapture(event.pointerId);
   activePointerId = event.pointerId;
@@ -2218,6 +2775,16 @@ function moveRack(event: PointerEvent) {
   const point = raycaster.ray.intersectPlane(floorPlaneForDrag, new THREE.Vector3());
   if (!point) return;
   const step = 0.1;
+  if (activeDrag.kind === 'device') {
+    const device = racks.value.find((item) => item.id === activeDrag?.id);
+    if (!device || device.locked) return;
+    device.group.position.copy(point.add(dragOffset));
+    device.x = device.group.position.x;
+    device.y = device.group.position.y;
+    device.z = device.group.position.z;
+    markSceneDirty();
+    return;
+  }
   const rack = activeDrag.kind === 'rack' ? racks.value.find((item) => item.id === activeDrag?.id) : null;
   if (rack) {
     if (rack.locked) return;
@@ -2253,6 +2820,7 @@ function onPointerUp() {
   activeDrag = null;
   activePointerId = null;
   controls.enabled = true;
+  finishContinuousHistoryChange();
 }
 
 function updateCameraConfigStatus() {
@@ -2385,6 +2953,7 @@ function animate() {
 onMounted(async () => {
   await nextTick();
   if (!viewport.value) return;
+  window.addEventListener('keydown', handleHistoryKeydown);
   RectAreaLightUniformsLib.init();
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111a22);
@@ -2416,6 +2985,11 @@ onMounted(async () => {
   controls.target.set(0, 1.2, 0);
   syncSceneViewFromCamera();
   controls.addEventListener('change', handleCameraChange);
+  transformControls = new TransformControls(camera, renderer.domElement);
+  transformControls.setMode(transformMode.value);
+  transformControls.addEventListener('dragging-changed', handleTransformDraggingChange);
+  transformControls.addEventListener('objectChange', handleTransformObjectChange);
+  scene.add(transformControls.getHelper());
   restoreInitialCameraView();
 
   hemisphereLight = new THREE.HemisphereLight(0xc9e5ff, 0x38414a, 2.1);
@@ -2460,6 +3034,13 @@ onMounted(async () => {
     assetError.value = '在线免费模型暂不可用，已切换为内置机柜。';
     console.error('Unable to load the CC0 rack model.', error);
   }
+  try {
+    await loadFreeDeviceModel();
+    assetStatus.value = '设备使用本地提供的临时模型';
+  } catch (error) {
+    assetError.value = '无法加载设备临时模型，将使用内置几何模型。';
+    console.error('Unable to load the provided device model.', error);
+  }
   let restoredLocalScene = false;
   try {
     const savedScene = localStorage.getItem(localSceneStorageKey);
@@ -2490,10 +3071,13 @@ onMounted(async () => {
     restoreInitialCameraView();
   }
   selectedId.value = null;
+  initializeUndoHistory();
 });
 
 onBeforeUnmount(() => {
   if (animationFrame) window.cancelAnimationFrame(animationFrame);
+  if (historyCaptureTimer !== null) window.clearTimeout(historyCaptureTimer);
+  window.removeEventListener('keydown', handleHistoryKeydown);
   resizeObserver?.disconnect();
   window.removeEventListener('pointerup', onPointerUp);
   if (selectionOutline) {
@@ -2511,6 +3095,14 @@ onBeforeUnmount(() => {
   }
   controls?.removeEventListener('change', handleCameraChange);
   controls?.dispose();
+  if (transformControls) {
+    transformControls.removeEventListener('dragging-changed', handleTransformDraggingChange);
+    transformControls.removeEventListener('objectChange', handleTransformObjectChange);
+    transformControls.detach();
+    scene.remove(transformControls.getHelper());
+    transformControls.dispose();
+    transformControls = null;
+  }
 });
 </script>
 
@@ -2555,6 +3147,8 @@ button { color: inherit; }
 .mode-switch button:hover { color: #dce9e8; }
 .mode-switch button.active { background: rgba(97,194,194,.17); color: #9de0da; box-shadow: inset 0 0 0 1px rgba(131,217,212,.18); }
 .top-button { height: 34px; border-radius: 4px; padding: 0 12px; font-size: 11px; border: 1px solid transparent; cursor: pointer; transition: .18s ease; }
+.top-button:disabled { opacity: .46; cursor: not-allowed; }
+.undo-button small { margin-left: 4px; color: #788b91; font-size: 8px; }
 .top-button.subtle { background: transparent; color: #a7b3bb; border-color: rgba(255,255,255,.12); }
 .top-button.subtle:hover { color: #eaf5f3; border-color: rgba(131,217,212,.45); }
 .top-button.primary { background: #67bebb; color: #102021; font-weight: 700; padding: 0 14px; }
@@ -2753,6 +3347,15 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .coordinate-grid label > span { color: #70bbb7; font-size: 9px; }
 .coordinate-grid input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #d6e0e2; font-size: 10px; }
 .coordinate-grid input:disabled { color: #75848a; }
+.transform-properties { padding-bottom: 12px; }
+.transform-mode-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: -2px 0 12px; padding: 3px; border: 1px solid rgba(172,199,211,.1); border-radius: 3px; background: #11191f; }
+.transform-mode-switch button { height: 27px; padding: 0; border: 0; border-radius: 2px; background: transparent; color: #87979d; font-size: 9px; cursor: pointer; }
+.transform-mode-switch button:hover { color: #dce9e8; }
+.transform-mode-switch button.active { background: rgba(97,194,194,.16); color: #9de0da; box-shadow: inset 0 0 0 1px rgba(131,217,212,.16); }
+.transform-value-heading { display: flex; align-items: center; gap: 5px; margin: 8px 0 6px; color: #91a0a9; font-size: 9px; }
+.transform-value-heading small { margin-left: auto; color: #687b84; font-size: 8px; }
+.transform-value-grid { gap: 5px; }
+.transform-value-grid label { height: 31px; }
 .unit-tag { color: #77868e; font-size: 9px; margin-left: auto; font-weight: 400; }
 .dimension-properties { padding-bottom: 10px; }
 .size-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 9px; font-size: 9px; color: #829198; }
