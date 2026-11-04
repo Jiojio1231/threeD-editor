@@ -304,10 +304,10 @@
             </button>
           </div>
           <section class="property-section">
-            <div class="section-title"><span>位置坐标</span><span class="edit-hint">拖动 XYZ 轴可调整</span></div>
+            <div class="section-title"><span>位置坐标</span><span class="edit-hint">{{ isDeviceKind(selectedRack.kind) ? '拖动 XYZ 轴可调整' : '机柜保持贴合地板' }}</span></div>
             <div class="coordinate-grid">
               <label><span>X</span><input :value="selectedRack.x.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('x', $event)"></label>
-              <label><span>Y</span><input :value="selectedRack.y.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('y', $event)"></label>
+              <label><span>Y</span><input :value="selectedRack.y.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked || !isDeviceKind(selectedRack.kind)" @change="updatePosition('y', $event)"></label>
               <label><span>Z</span><input :value="selectedRack.z.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('z', $event)"></label>
             </div>
           </section>
@@ -679,6 +679,7 @@ const historyBusy = ref(false);
 const historyError = ref('');
 const transformMode = ref<TransformMode>('translate');
 const transformAxes: TransformAxis[] = ['x', 'y', 'z'];
+const rackFloorY = 0.035;
 const annotationTitle = ref('');
 const annotationDescription = ref('');
 const floorMaterialError = ref('');
@@ -809,6 +810,7 @@ function updateTransformValue(
 function setTransformMode(mode: TransformMode) {
   transformMode.value = mode;
   transformControls?.setMode(mode);
+  updateTransformControlsSelection();
 }
 
 function isDeviceKind(kind: unknown): kind is DeviceKind {
@@ -1803,6 +1805,14 @@ function clampRackToRoom(rack: RackItem) {
     rack.z = rack.group.position.z;
     return;
   }
+  rack.group.updateWorldMatrix(true, true);
+  const bounds = new THREE.Box3().setFromObject(rack.group);
+  if (!bounds.isEmpty() && Number.isFinite(bounds.min.y)) {
+    rack.group.position.y += rackFloorY - bounds.min.y;
+    rack.group.updateWorldMatrix(true, true);
+  } else {
+    rack.group.position.y = rackFloorY;
+  }
   const limitX = Math.max(0, room.width / 2 - rack.width / 2 - 0.08);
   const limitZ = Math.max(0, room.length / 2 - rack.depth / 2 - 0.08);
   rack.group.position.x = THREE.MathUtils.clamp(rack.group.position.x, -limitX, limitX);
@@ -1857,7 +1867,7 @@ function updateTransformControlsSelection() {
   const rack = racks.value.find((item) => item.id === selectedId.value);
   if (rack && !rack.locked) {
     transformControls.showX = true;
-    transformControls.showY = true;
+    transformControls.showY = isDeviceKind(rack.kind) || transformMode.value !== 'translate';
     transformControls.showZ = true;
     transformControls.attach(rack.group);
     return;
