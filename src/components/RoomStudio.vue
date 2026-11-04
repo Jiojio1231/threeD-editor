@@ -24,6 +24,9 @@
         <button v-if="!isPreviewMode" class="top-button primary" type="button" @click="addRack">
           <span class="plus">＋</span> 添加机柜
         </button>
+        <button v-if="!isPreviewMode" class="top-button subtle fire-smoke-top-button" type="button" @click="addFireSmokeObject">
+          <span class="button-icon">✦</span> 添加火焰/烟雾
+        </button>
         <button v-if="!isPreviewMode" class="top-button partition-top-button" type="button" @click="addPartition">
           <span class="plus">＋</span> 添加隔板
         </button>
@@ -130,6 +133,7 @@
           <button class="import-button partition-add-button" type="button" @click="addPartition">
             <span class="partition-add-icon">╱</span><span>添加空间隔板</span><small>墙体</small>
           </button>
+          <p v-if="fireSmokeError" class="error-note">{{ fireSmokeError }}</p>
           <div class="asset-source">
             <span>{{ assetStatus }}</span>
             <div class="asset-links">
@@ -190,7 +194,7 @@
 
       <aside v-if="!isPreviewMode" class="sidebar right-sidebar">
         <div class="right-heading">
-          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? `${isDeviceKind(selectedRack.kind) ? '设备' : '机柜'}属性` : '场景工具' }}</h2></div>
+          <div><div class="eyebrow">OBJECT DETAILS</div><h2>{{ selectedPartition ? selectedPartition.roomWallSide ? '机房外墙属性' : '隔板属性' : selectedRack ? `${selectedRack.kind === 'fire-smoke' ? '效果' : isDeviceKind(selectedRack.kind) ? '设备' : '机柜'}属性` : '场景工具' }}</h2></div>
           <span class="more-dots">···</span>
         </div>
 
@@ -297,7 +301,7 @@
         <template v-else-if="selectedRack">
           <div class="selected-card">
             <div class="selected-preview"><span class="rack-glyph large"></span><span class="preview-glow"></span></div>
-            <div class="selected-name"><span class="selected-type">{{ isDeviceKind(selectedRack.kind) ? 'DEVICE' : selectedRack.kind === 'imported' ? 'IMPORT MODEL' : 'SERVER RACK' }}</span><strong>{{ selectedRack.name }}</strong><small>对象 ID · {{ selectedRack.id.slice(-6).toUpperCase() }}</small></div>
+            <div class="selected-name"><span class="selected-type">{{ selectedRack.kind === 'fire-smoke' ? 'FIRE / SMOKE EFFECT' : isDeviceKind(selectedRack.kind) ? 'DEVICE' : selectedRack.kind === 'imported' ? 'IMPORT MODEL' : 'SERVER RACK' }}</span><strong>{{ selectedRack.name }}</strong><small>对象 ID · {{ selectedRack.id.slice(-6).toUpperCase() }}</small></div>
             <button class="selected-lock-button" :class="{ active: selectedRack.locked }" type="button" :aria-label="selectedRack.locked ? '解锁物体' : '锁定物体'" @click="toggleLock(selectedRack.id)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.2"></rect><path v-if="selectedRack.locked" d="M5 7V5a3 3 0 0 1 6 0v2"></path><path v-else d="M5 7V5a3 3 0 0 1 5.2-2"></path></svg>
               <span>{{ selectedRack.locked ? '解锁' : '锁定' }}</span>
@@ -307,7 +311,7 @@
             <div class="section-title"><span>位置坐标</span><span class="edit-hint">{{ isDeviceKind(selectedRack.kind) ? '拖动 XYZ 轴可调整' : '机柜保持贴合地板' }}</span></div>
             <div class="coordinate-grid">
               <label><span>X</span><input :value="selectedRack.x.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('x', $event)"></label>
-              <label><span>Y</span><input :value="selectedRack.y.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked || !isDeviceKind(selectedRack.kind)" @change="updatePosition('y', $event)"></label>
+              <label><span>Y</span><input :value="selectedRack.y.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked || (!isDeviceKind(selectedRack.kind) && selectedRack.kind !== 'fire-smoke')" @change="updatePosition('y', $event)"></label>
               <label><span>Z</span><input :value="selectedRack.z.toFixed(1)" type="number" step="0.1" :disabled="selectedRack.locked" @change="updatePosition('z', $event)"></label>
             </div>
           </section>
@@ -327,6 +331,17 @@
               <label v-for="axis in transformAxes" :key="`rack-scale-${axis}`"><span>{{ axis.toUpperCase() }}</span><input :value="selectedRack.transform.scale[axis].toFixed(2)" type="number" min="0.1" max="10" step="0.1" :disabled="selectedRack.locked" @change="updateTransformValue('scale', axis, $event)"></label>
             </div>
           </section>
+          <section v-if="selectedRack.kind === 'fire-smoke'" class="property-section fire-smoke-panel">
+            <div class="section-title"><span>火焰与烟雾模拟</span><span class="unit-tag">粒子</span></div>
+            <p class="fire-smoke-help">程序化粒子效果，非真实流体模拟。</p>
+            <label class="lighting-toggle"><input type="checkbox" :checked="selectedRack.fireSmoke?.enabled ?? false" @change="updateFireSmokeEnabled(selectedRack.id, $event)"><span>启用效果</span></label>
+            <label class="lighting-range fire-smoke-intensity">
+              <span>效果强度 <strong>{{ (selectedRack.fireSmoke?.intensity ?? 1).toFixed(1) }}</strong></span>
+              <input type="range" min="0.2" max="2" step="0.1" :value="selectedRack.fireSmoke?.intensity ?? 1" :disabled="!selectedRack.fireSmoke?.enabled" aria-label="火焰与烟雾强度" @input="updateFireSmokeIntensity(selectedRack.id, $event)">
+            </label>
+            <button class="remove-fire-smoke" type="button" @click="removeSelected"><span>⌫</span> 删除效果</button>
+            <p v-if="fireSmokeError" class="error-note">{{ fireSmokeError }}</p>
+          </section>
           <section class="property-section dimension-properties">
             <div class="section-title"><span>模型尺寸</span><span class="unit-tag">m</span></div>
             <div class="size-row"><span>宽度</span><strong>{{ (selectedRack.width * selectedRack.transform.scale.x).toFixed(2) }} <small>m</small></strong></div>
@@ -343,6 +358,7 @@
           </div>
           <div class="quick-actions">
             <button type="button" @click="addRack"><span class="quick-icon">▤</span><span><strong>添加标准机柜</strong><small>快速放置到房间地板</small></span><b>＋</b></button>
+            <button type="button" @click="addFireSmokeObject"><span class="quick-icon fire-smoke-icon">✦</span><span><strong>添加火焰与烟雾</strong><small>独立场景对象，可自由移动</small></span><b>＋</b></button>
             <button type="button" @click="addDevice('camera')"><span class="quick-icon">◉</span><span><strong>添加摄像头</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
             <button type="button" @click="addDevice('smoke-detector')"><span class="quick-icon">◌</span><span><strong>添加烟雾报警器</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
             <button type="button" @click="addDevice('temperature-sensor')"><span class="quick-icon">⊙</span><span><strong>添加温度传感器</strong><small>临时使用提供模型 · 自由三维移动</small></span><b>＋</b></button>
@@ -455,13 +471,25 @@
             <p v-if="!selectedRack" class="annotation-tip">先选择一个机柜，标注将固定在该对象上。</p>
           </div>
           <div v-if="annotations.length" class="annotation-list">
-            <div v-for="annotation in annotations" :key="annotation.id" class="annotation-row" :class="{ active: selectedId === annotation.itemId }" @click="selectItem(annotation.itemId)">
+            <div v-for="annotation in annotations" :key="annotation.id" class="annotation-row" :class="{ active: selectedAnnotationId === annotation.id }" @click="selectAnnotation(annotation.id)">
               <span class="annotation-pin">⌖</span>
               <span class="annotation-copy"><strong>{{ annotation.title }}</strong><small>{{ annotation.description || '暂无描述' }}</small></span>
               <button type="button" aria-label="删除标注" @click.stop="removeAnnotation(annotation.id)">×</button>
             </div>
           </div>
           <div v-else class="annotation-empty"><span>↗</span><p>添加标注后，信息卡片会显示在场景对象上方。</p></div>
+          <div v-if="selectedAnnotation" class="annotation-settings">
+            <div class="annotation-settings-title">标注外观与位置</div>
+            <div class="annotation-settings-grid">
+              <label><span>宽度 (px)</span><input type="number" min="20" max="400" step="10" :value="selectedAnnotation.width" @change="updateAnnotationSize(selectedAnnotation.id, 'width', $event)"></label>
+              <label><span>高度 (px)</span><input type="number" min="20" max="240" step="4" :value="selectedAnnotation.height" @change="updateAnnotationSize(selectedAnnotation.id, 'height', $event)"></label>
+            </div>
+            <div class="annotation-settings-title offset-title">相对物体偏移 (m)</div>
+            <div class="annotation-settings-grid offset-grid">
+              <label v-for="axis in transformAxes" :key="`annotation-offset-${axis}`"><span>{{ axis.toUpperCase() }}</span><input type="number" min="-10" max="10" step="0.05" :value="selectedAnnotation.offset[axis]" @change="updateAnnotationOffset(selectedAnnotation.id, axis, $event)"></label>
+            </div>
+            <p class="annotation-tip">Y 偏移以物体上方的默认标注位置为基准。</p>
+          </div>
         </section>
         <div class="right-footer"><span>✦</span> Spatial tools <i>v1.0</i></div>
       </aside>
@@ -480,12 +508,35 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
 type DeviceKind = 'camera' | 'smoke-detector' | 'temperature-sensor';
-type RackKind = 'rack' | 'imported' | DeviceKind;
+type RackKind = 'rack' | 'imported' | 'fire-smoke' | DeviceKind;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 type TransformAxis = 'x' | 'y' | 'z';
 type ObjectTransform = {
   rotation: Record<TransformAxis, number>;
   scale: Record<TransformAxis, number>;
+};
+
+type FireSmokeSettings = {
+  enabled: boolean;
+  intensity: number;
+};
+
+type FireSmokeParticle = {
+  sprite: THREE.Sprite;
+  material: THREE.SpriteMaterial;
+  age: number;
+  lifetime: number;
+  phase: number;
+  originX: number;
+  originZ: number;
+};
+
+type FireSmokeEffect = {
+  group: THREE.Group;
+  flameParticles: FireSmokeParticle[];
+  smokeParticles: FireSmokeParticle[];
+  light: THREE.PointLight;
+  settings: FireSmokeSettings;
 };
 
 type RackItem = {
@@ -501,6 +552,7 @@ type RackItem = {
   z: number;
   transform: ObjectTransform;
   locked: boolean;
+  fireSmoke: FireSmokeSettings | null;
 };
 
 type RoomWallSide = 'north' | 'south' | 'east' | 'west';
@@ -572,7 +624,20 @@ type Annotation = {
   itemId: string;
   title: string;
   description: string;
+  width: number;
+  height: number;
+  offset: Record<TransformAxis, number>;
   label: CSS2DObject;
+};
+
+type SceneAnnotation = {
+  id: string;
+  itemId: string;
+  title: string;
+  description: string;
+  width?: number;
+  height?: number;
+  offset?: Record<TransformAxis, number>;
 };
 
 type SceneRack = {
@@ -588,6 +653,7 @@ type SceneRack = {
   transform?: ObjectTransform;
   locked: boolean;
   modelAsset?: Record<string, unknown>;
+  fireSmoke?: FireSmokeSettings;
 };
 
 type ScenePartition = {
@@ -614,7 +680,7 @@ type SceneDocument = {
   room: { width: number; length: number; height: number };
   racks: SceneRack[];
   partitions: ScenePartition[];
-  annotations: Array<Omit<Annotation, 'label'>>;
+  annotations: SceneAnnotation[];
   lighting?: LightingSettings;
   ceilingLighting?: CeilingLightingSettings;
   floorMaterial?: FloorMaterialType;
@@ -674,6 +740,7 @@ const racks = ref<RackItem[]>([]);
 const partitions = ref<PartitionItem[]>([]);
 const annotations = ref<Annotation[]>([]);
 const selectedId = ref<string | null>(null);
+const selectedAnnotationId = ref<string | null>(null);
 const undoCount = ref(0);
 const historyBusy = ref(false);
 const historyError = ref('');
@@ -686,11 +753,13 @@ const floorMaterialError = ref('');
 const importError = ref('');
 const assetStatus = ref('CC0 模型加载中');
 const assetError = ref('');
+const fireSmokeError = ref('');
 const saveStatus = ref('尚未保存');
 const sceneFileError = ref('');
 
 const selectedRack = computed(() => racks.value.find((rack) => rack.id === selectedId.value) ?? null);
 const selectedPartition = computed(() => partitions.value.find((partition) => partition.id === selectedId.value) ?? null);
+const selectedAnnotation = computed(() => annotations.value.find((annotation) => annotation.id === selectedAnnotationId.value) ?? null);
 watch(selectedId, () => {
   updateSelectionOutline();
   updateTransformControlsSelection();
@@ -715,6 +784,7 @@ let freeRackPrototype: THREE.Group | null = null;
 let freeDevicePrototype: THREE.Group | null = null;
 let resizeObserver: ResizeObserver;
 let animationFrame = 0;
+let lastAnimationTimestamp = 0;
 let activeDrag: { kind: 'rack' | 'device' | 'partition'; id: string } | null = null;
 let activePointerId: number | null = null;
 let applyingSceneView = false;
@@ -737,6 +807,9 @@ let historyCaptureTimer: number | null = null;
 let historySnapshotPromise: Promise<HistorySnapshot | null> | null = null;
 let historyPendingRecords: Promise<void>[] = [];
 const historyModelAssetCache = new Map<string, Record<string, unknown>>();
+const fireSmokeEffects = new Map<string, FireSmokeEffect>();
+let fireParticleTexture: THREE.DataTexture | null = null;
+let smokeParticleTexture: THREE.DataTexture | null = null;
 const wallMaterialPresets: Record<WallMaterialType, { roughness: number; metalness: number }> = {
   paint: { roughness: 0.72, metalness: 0.12 },
   concrete: { roughness: 0.94, metalness: 0.02 },
@@ -821,6 +894,7 @@ function rackKindLabel(kind: RackKind) {
   const labels: Record<RackKind, string> = {
     rack: '标准机柜',
     imported: '导入模型',
+    'fire-smoke': '火焰与烟雾',
     camera: '摄像头',
     'smoke-detector': '烟雾报警器',
     'temperature-sensor': '温度传感器',
@@ -1310,6 +1384,7 @@ function addRack() {
     z: position.z,
     transform: createObjectTransform(),
     locked: false,
+    fireSmoke: null,
   });
   selectedId.value = id;
   markSceneDirty();
@@ -1338,9 +1413,245 @@ function addDevice(kind: DeviceKind) {
     ...position,
     transform: createObjectTransform(),
     locked: false,
+    fireSmoke: null,
   });
   selectedId.value = id;
   markSceneDirty();
+}
+
+function getParticleTexture(kind: 'flame' | 'smoke') {
+  const cachedTexture = kind === 'flame' ? fireParticleTexture : smokeParticleTexture;
+  if (cachedTexture) return cachedTexture;
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  const center = (size - 1) / 2;
+  const radiusX = kind === 'flame' ? 22 : 29;
+  const radiusY = kind === 'flame' ? 30 : 29;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = (x - center) / radiusX;
+      const dy = (y - center) / radiusY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const alpha = Math.round(255 * Math.pow(Math.max(0, 1 - distance), kind === 'flame' ? 1.4 : 1.8));
+      const index = (y * size + x) * 4;
+      data[index] = 255;
+      data[index + 1] = 255;
+      data[index + 2] = 255;
+      data[index + 3] = alpha;
+    }
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  if (kind === 'flame') fireParticleTexture = texture;
+  else smokeParticleTexture = texture;
+  return texture;
+}
+
+function createFireSmokeParticle(
+  group: THREE.Group,
+  kind: 'flame' | 'smoke',
+  index: number,
+  count: number,
+): FireSmokeParticle {
+  const phase = index * 2.399963229728653;
+  const material = new THREE.SpriteMaterial({
+    map: getParticleTexture(kind),
+    color: kind === 'flame' ? 0xffb33e : 0x9ca6aa,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+    blending: kind === 'flame' ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.center.set(0.5, kind === 'flame' ? 0.05 : 0.5);
+  sprite.renderOrder = kind === 'flame' ? 4 : 3;
+  group.add(sprite);
+  const lifetime = kind === 'flame' ? 0.65 + (index % 5) * 0.12 : 2 + (index % 6) * 0.35;
+  return {
+    sprite,
+    material,
+    age: (index / count) * lifetime,
+    lifetime,
+    phase,
+    originX: Math.cos(phase) * (kind === 'flame' ? 0.07 : 0.12),
+    originZ: Math.sin(phase) * (kind === 'flame' ? 0.07 : 0.12),
+  };
+}
+
+function createFireSmokeEffect(rack: RackItem) {
+  if (!rack.fireSmoke || fireSmokeEffects.has(rack.id)) return;
+  const visualGroup = markRaw(new THREE.Group());
+  visualGroup.name = `${rack.name} 火焰与烟雾`;
+  visualGroup.userData.sceneEffect = true;
+  const flameParticles = Array.from({ length: 16 }, (_, index) => (
+    createFireSmokeParticle(visualGroup, 'flame', index, 16)
+  ));
+  const smokeParticles = Array.from({ length: 18 }, (_, index) => (
+    createFireSmokeParticle(visualGroup, 'smoke', index, 18)
+  ));
+  const light = new THREE.PointLight(0xff6a24, 0, 5, 2);
+  light.position.y = 0.18;
+  visualGroup.add(light);
+  visualGroup.visible = rack.fireSmoke.enabled;
+  const hitbox = new THREE.Mesh(
+    new THREE.BoxGeometry(rack.width, rack.height, rack.depth),
+    new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  hitbox.name = `${rack.name} 选择区域`;
+  hitbox.position.y = rack.height / 2;
+  hitbox.userData.itemId = rack.id;
+  rack.group.add(hitbox, visualGroup);
+  fireSmokeEffects.set(rack.id, {
+    group: visualGroup,
+    flameParticles,
+    smokeParticles,
+    light,
+    settings: rack.fireSmoke,
+  });
+}
+
+function createFireSmokeRack(
+  id: string,
+  name: string,
+  position: { x: number; y: number; z: number },
+  settings: FireSmokeSettings,
+): RackItem {
+  const width = 1.2;
+  const depth = 1.2;
+  const height = 3.5;
+  const group = markRaw(new THREE.Group());
+  group.name = name;
+  group.userData.itemId = id;
+  group.position.set(position.x, position.y, position.z);
+  return reactive({
+    id,
+    name,
+    kind: 'fire-smoke',
+    group,
+    width,
+    depth,
+    height,
+    x: position.x,
+    y: position.y,
+    z: position.z,
+    transform: createObjectTransform(),
+    locked: false,
+    fireSmoke: { ...settings },
+  });
+}
+
+function updateFireSmokeEffect(effect: FireSmokeEffect, delta: number, time: number) {
+  if (!effect.settings.enabled) {
+    effect.group.visible = false;
+    return;
+  }
+  effect.group.visible = true;
+  const intensity = effect.settings.intensity;
+  for (const particle of effect.flameParticles) {
+    particle.age = (particle.age + delta) % particle.lifetime;
+    const progress = particle.age / particle.lifetime;
+    const drift = Math.sin(time * 3.2 + particle.phase);
+    particle.sprite.position.set(
+      particle.originX + drift * 0.045 * intensity,
+      progress * 0.85 * intensity,
+      particle.originZ + Math.cos(time * 2.7 + particle.phase) * 0.04 * intensity,
+    );
+    particle.sprite.scale.set(
+      (0.13 + progress * 0.09) * intensity,
+      (0.3 + progress * 0.16) * intensity,
+      1,
+    );
+    particle.material.opacity = 0.9 * (1 - progress * 0.68);
+    particle.material.color.setRGB(1, 0.22 + (1 - progress) * 0.58, 0.04 + (1 - progress) * 0.12);
+  }
+  for (const particle of effect.smokeParticles) {
+    particle.age = (particle.age + delta) % particle.lifetime;
+    const progress = particle.age / particle.lifetime;
+    const drift = Math.sin(time * 0.7 + particle.phase);
+    const size = (0.16 + progress * 0.38) * intensity;
+    particle.sprite.position.set(
+      particle.originX + drift * progress * 0.3 * intensity,
+      0.12 + progress * 1.65 * intensity,
+      particle.originZ + Math.cos(time * 0.6 + particle.phase) * progress * 0.24 * intensity,
+    );
+    particle.sprite.scale.set(size, size * 0.82, 1);
+    particle.material.opacity = 0.3 * (1 - progress) * Math.min(intensity, 1.5);
+  }
+  effect.light.intensity = 0.7 + intensity * (2.1 + Math.sin(time * 12) * 0.55);
+  effect.light.distance = 3 + intensity * 2;
+}
+
+function addFireSmokeObject() {
+  if (!scene) return;
+  fireSmokeError.value = '';
+  const index = racks.value.filter((item) => item.kind === 'fire-smoke').length + 1;
+  const id = createId();
+  const name = `火焰与烟雾 ${String(index).padStart(2, '0')}`;
+  const position = findFreePosition(1.2, 1.2);
+  const rack = createFireSmokeRack(id, name, { ...position, y: rackFloorY }, { enabled: true, intensity: 1 });
+  try {
+    createFireSmokeEffect(rack);
+    scene.add(rack.group);
+    racks.value.push(rack);
+    clampRackToRoom(rack);
+    selectedId.value = id;
+    markSceneDirty();
+  } catch (error) {
+    const effect = fireSmokeEffects.get(id);
+    if (effect) {
+      effect.group.parent?.remove(effect.group);
+      disposeGroup(effect.group);
+      fireSmokeEffects.delete(id);
+    }
+    scene.remove(rack.group);
+    racks.value = racks.value.filter((item) => item.id !== id);
+    disposeGroup(rack.group);
+    console.error('Unable to create the fire and smoke particle effect.', error);
+    fireSmokeError.value = error instanceof Error ? `无法创建火焰与烟雾效果：${error.message}` : '无法创建火焰与烟雾效果。';
+  }
+}
+
+function updateFireSmokeEnabled(id: string, event: Event) {
+  const rack = racks.value.find((item) => item.id === id);
+  if (!rack?.fireSmoke) return;
+  rack.fireSmoke.enabled = (event.target as HTMLInputElement).checked;
+  const effect = fireSmokeEffects.get(id);
+  if (effect) effect.group.visible = rack.fireSmoke.enabled;
+  markSceneDirty();
+}
+
+function updateFireSmokeIntensity(id: string, event: Event) {
+  const rack = racks.value.find((item) => item.id === id);
+  const input = event.target as HTMLInputElement;
+  if (!rack?.fireSmoke || !Number.isFinite(input.valueAsNumber)) return;
+  rack.fireSmoke.intensity = clampNumber(input.valueAsNumber, 0.2, 2, rack.fireSmoke.intensity);
+  input.value = String(rack.fireSmoke.intensity);
+  markSceneDirty();
+}
+
+function removeFireSmokeEffect(id: string) {
+  const rack = racks.value.find((item) => item.id === id);
+  const effect = fireSmokeEffects.get(id);
+  if (!rack?.fireSmoke) return;
+  if (effect) {
+    effect.group.parent?.remove(effect.group);
+    disposeGroup(effect.group);
+    fireSmokeEffects.delete(id);
+  }
+  rack.fireSmoke = null;
+  markSceneDirty();
+}
+
+function clearFireSmokeEffects() {
+  for (const effect of fireSmokeEffects.values()) {
+    effect.group.parent?.remove(effect.group);
+    disposeGroup(effect.group);
+  }
+  fireSmokeEffects.clear();
 }
 
 function addPartition() {
@@ -1805,13 +2116,15 @@ function clampRackToRoom(rack: RackItem) {
     rack.z = rack.group.position.z;
     return;
   }
-  rack.group.updateWorldMatrix(true, true);
-  const bounds = new THREE.Box3().setFromObject(rack.group);
-  if (!bounds.isEmpty() && Number.isFinite(bounds.min.y)) {
-    rack.group.position.y += rackFloorY - bounds.min.y;
+  if (rack.kind !== 'fire-smoke') {
     rack.group.updateWorldMatrix(true, true);
-  } else {
-    rack.group.position.y = rackFloorY;
+    const bounds = new THREE.Box3().setFromObject(rack.group);
+    if (!bounds.isEmpty() && Number.isFinite(bounds.min.y)) {
+      rack.group.position.y += rackFloorY - bounds.min.y;
+      rack.group.updateWorldMatrix(true, true);
+    } else {
+      rack.group.position.y = rackFloorY;
+    }
   }
   const limitX = Math.max(0, room.width / 2 - rack.width / 2 - 0.08);
   const limitZ = Math.max(0, room.length / 2 - rack.depth / 2 - 0.08);
@@ -1867,7 +2180,7 @@ function updateTransformControlsSelection() {
   const rack = racks.value.find((item) => item.id === selectedId.value);
   if (rack && !rack.locked) {
     transformControls.showX = true;
-    transformControls.showY = isDeviceKind(rack.kind) || transformMode.value !== 'translate';
+    transformControls.showY = isDeviceKind(rack.kind) || rack.kind === 'fire-smoke' || transformMode.value !== 'translate';
     transformControls.showZ = true;
     transformControls.attach(rack.group);
     return;
@@ -1913,6 +2226,7 @@ function handleTransformDraggingChange(event: { value: boolean }) {
 function removeSelected() {
   if (!selectedRack.value || !scene) return;
   const id = selectedRack.value.id;
+  removeFireSmokeEffect(id);
   scene.remove(selectedRack.value.group);
   disposeGroup(selectedRack.value.group);
   racks.value = racks.value.filter((rack) => rack.id !== id);
@@ -1995,6 +2309,7 @@ function importModel(event: Event) {
         z: position.z,
         transform: createObjectTransform(),
         locked: false,
+        fireSmoke: null,
       });
       selectedId.value = id;
       markSceneDirty();
@@ -2013,14 +2328,30 @@ function addAnnotation() {
   const title = annotationTitle.value.trim();
   if (!rack || !title) return;
   attachAnnotation(rack, createId(), title, annotationDescription.value.trim());
+  selectedAnnotationId.value = annotations.value.at(-1)?.id ?? null;
   annotationTitle.value = '';
   annotationDescription.value = '';
   markSceneDirty();
 }
 
-function attachAnnotation(rack: RackItem, id: string, title: string, description: string) {
+function attachAnnotation(
+  rack: RackItem,
+  id: string,
+  title: string,
+  description: string,
+  settings: Pick<SceneAnnotation, 'width' | 'height' | 'offset'> = {},
+) {
+  const width = clampNumber(settings.width ?? 190, 20, 400, 190);
+  const height = clampNumber(settings.height ?? 56, 20, 240, 56);
+  const offset = {
+    x: clampNumber(settings.offset?.x ?? 0, -10, 10, 0),
+    y: clampNumber(settings.offset?.y ?? 0, -10, 10, 0),
+    z: clampNumber(settings.offset?.z ?? 0, -10, 10, 0),
+  };
   const element = document.createElement('div');
   element.className = 'scene-annotation';
+  element.style.width = `${width}px`;
+  element.style.height = `${height}px`;
   const pointerMark = document.createElement('span');
   pointerMark.className = 'scene-annotation-pin';
   pointerMark.textContent = '↗';
@@ -2034,23 +2365,61 @@ function attachAnnotation(rack: RackItem, id: string, title: string, description
     descriptionElement.textContent = description;
     content.appendChild(descriptionElement);
   }
-  element.append(pointerMark, content);
+  element.append( content);
   const label = markRaw(new CSS2DObject(element));
-  label.position.set(0, rack.height + 0.36, 0);
+  label.position.set(offset.x, rack.height + 0.36 + offset.y, offset.z);
   rack.group.add(label);
   annotations.value.push({
     id,
     itemId: rack.id,
     title,
     description,
+    width,
+    height,
+    offset,
     label,
   });
+}
+
+function selectAnnotation(id: string) {
+  const annotation = annotations.value.find((item) => item.id === id);
+  if (!annotation) return;
+  selectedAnnotationId.value = id;
+  selectItem(annotation.itemId);
+}
+
+function updateAnnotationSize(id: string, dimension: 'width' | 'height', event: Event) {
+  const annotation = annotations.value.find((item) => item.id === id);
+  const input = event.target as HTMLInputElement;
+  if (!annotation || !Number.isFinite(input.valueAsNumber)) return;
+  const min = 20;
+  const max = dimension === 'width' ? 400 : 240;
+  annotation[dimension] = clampNumber(input.valueAsNumber, min, max, annotation[dimension]);
+  input.value = String(annotation[dimension]);
+  annotation.label.element.style[dimension] = `${annotation[dimension]}px`;
+  markSceneDirty();
+}
+
+function updateAnnotationOffset(id: string, axis: TransformAxis, event: Event) {
+  const annotation = annotations.value.find((item) => item.id === id);
+  const rack = racks.value.find((item) => item.id === annotation?.itemId);
+  const input = event.target as HTMLInputElement;
+  if (!annotation || !rack || !Number.isFinite(input.valueAsNumber)) return;
+  annotation.offset[axis] = clampNumber(input.valueAsNumber, -10, 10, annotation.offset[axis]);
+  input.value = String(annotation.offset[axis]);
+  annotation.label.position.set(
+    annotation.offset.x,
+    rack.height + 0.36 + annotation.offset.y,
+    annotation.offset.z,
+  );
+  markSceneDirty();
 }
 
 function removeAnnotation(id: string) {
   const annotation = annotations.value.find((item) => item.id === id);
   if (!annotation) return;
   annotation.label.parent?.remove(annotation.label);
+  if (selectedAnnotationId.value === id) selectedAnnotationId.value = null;
   annotations.value = annotations.value.filter((item) => item.id !== id);
   markSceneDirty();
 }
@@ -2274,12 +2643,20 @@ function isSceneViewSettings(value: unknown): value is SceneViewSettings {
 function isSceneRack(value: unknown): value is SceneRack {
   if (!isRecord(value)) return false;
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || value.name.length > 128) return false;
-  if (value.kind !== 'rack' && value.kind !== 'imported' && !isDeviceKind(value.kind)) return false;
+  if (value.kind !== 'rack' && value.kind !== 'imported' && value.kind !== 'fire-smoke' && !isDeviceKind(value.kind)) return false;
   if (!isFiniteInRange(value.width, 0.01, 40) || !isFiniteInRange(value.depth, 0.01, 40) || !isFiniteInRange(value.height, 0.01, 20)) return false;
   if (!isFiniteInRange(value.x, -100, 100) || !isFiniteInRange(value.z, -100, 100) || typeof value.locked !== 'boolean') return false;
   if (value.y !== undefined && !isFiniteInRange(value.y, -100, 100)) return false;
   if (value.transform !== undefined && !isObjectTransform(value.transform)) return false;
+  if (value.fireSmoke !== undefined && !isFireSmokeSettings(value.fireSmoke)) return false;
+  if (value.kind === 'fire-smoke' && value.fireSmoke === undefined) return false;
   return value.kind !== 'imported' || isRecord(value.modelAsset);
+}
+
+function isFireSmokeSettings(value: unknown): value is FireSmokeSettings {
+  return isRecord(value)
+    && typeof value.enabled === 'boolean'
+    && isFiniteInRange(value.intensity, 0.2, 2);
 }
 
 function isScenePartition(value: unknown): value is ScenePartition {
@@ -2313,14 +2690,21 @@ function isDoorHingeSide(value: unknown): value is DoorHingeSide {
   return value === 'left' || value === 'right';
 }
 
-function isSceneAnnotation(value: unknown): value is Omit<Annotation, 'label'> {
+function isSceneAnnotation(value: unknown): value is SceneAnnotation {
   return isRecord(value)
     && typeof value.id === 'string'
     && typeof value.itemId === 'string'
     && typeof value.title === 'string'
     && value.title.length <= 256
     && typeof value.description === 'string'
-    && value.description.length <= 4000;
+    && value.description.length <= 4000
+    && (value.width === undefined || isFiniteInRange(value.width, 20, 400))
+    && (value.height === undefined || isFiniteInRange(value.height, 20, 240))
+    && (value.offset === undefined || isAnnotationOffset(value.offset));
+}
+
+function isAnnotationOffset(value: unknown): value is Record<TransformAxis, number> {
+  return isRecord(value) && transformAxes.every((axis) => isFiniteInRange(value[axis], -10, 10));
 }
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
@@ -2463,6 +2847,7 @@ async function serializeScene(modelAssetCache?: Map<string, Record<string, unkno
       z: rack.group.position.z,
       transform: cloneObjectTransform(rack.transform),
       locked: rack.locked,
+      ...(rack.fireSmoke ? { fireSmoke: { ...rack.fireSmoke } } : {}),
     };
     if (rack.kind === 'imported') {
       const cachedAsset = modelAssetCache?.get(rack.id);
@@ -2471,7 +2856,7 @@ async function serializeScene(modelAssetCache?: Map<string, Record<string, unkno
       } else {
         const modelRoot = new THREE.Group();
         for (const child of rack.group.children) {
-          if (!(child instanceof CSS2DObject)) modelRoot.add(child.clone(true));
+          if (!(child instanceof CSS2DObject) && !child.userData.sceneEffect) modelRoot.add(child.clone(true));
         }
         const exportedModel = await gltfExporter.parseAsync(modelRoot, { embedImages: true });
         if (exportedModel instanceof ArrayBuffer) throw new Error('导出导入模型时返回了无效的数据格式。');
@@ -2509,7 +2894,15 @@ async function serializeScene(modelAssetCache?: Map<string, Record<string, unkno
       wallColor: partition.wallColor,
       doors: partition.doors.map((door) => ({ ...door })),
     })),
-    annotations: annotations.value.map(({ id, itemId, title, description }) => ({ id, itemId, title, description })),
+    annotations: annotations.value.map(({ id, itemId, title, description, width, height, offset }) => ({
+      id,
+      itemId,
+      title,
+      description,
+      width,
+      height,
+      offset: { ...offset },
+    })),
     lighting: { ...lighting },
     ceilingLighting: { ...ceilingLighting },
     floorMaterial: floorMaterialType.value,
@@ -2595,12 +2988,15 @@ async function loadSceneDocument(documentData: SceneDocument) {
       });
       group = new THREE.Group();
       group.add(gltf.scene);
+    } else if (rackData.kind === 'fire-smoke') {
+      group = new THREE.Group();
     } else if (isDeviceKind(rackData.kind)) {
       group = buildDevice(rackData.kind, rackData.name, rackData.id).group;
     } else {
       group = buildRack(rackData.name, rackData.id).group;
     }
     group.name = rackData.name;
+    group.userData.itemId = rackData.id;
     const y = rackData.y ?? (isDeviceKind(rackData.kind) ? documentData.room.height + 0.2 : 0.035);
     group.position.set(rackData.x, y, rackData.z);
     const transform = cloneObjectTransform(rackData.transform);
@@ -2625,6 +3021,9 @@ async function loadSceneDocument(documentData: SceneDocument) {
       z: rackData.z,
       transform,
       locked: rackData.locked,
+      fireSmoke: rackData.kind === 'fire-smoke'
+        ? { ...(rackData.fireSmoke ?? { enabled: true, intensity: 1 }) }
+        : null,
     });
   }
 
@@ -2639,12 +3038,14 @@ async function loadSceneDocument(documentData: SceneDocument) {
       hingeSide: door.hingeSide ?? 'left',
     })),
   }));
+  clearFireSmokeEffects();
   for (const item of [...racks.value, ...partitions.value]) {
     scene.remove(item.group);
     disposeGroup(item.group);
   }
   for (const annotation of annotations.value) annotation.label.parent?.remove(annotation.label);
   annotations.value = [];
+  selectedAnnotationId.value = null;
   racks.value = [];
   partitions.value = [];
   room.width = documentData.room.width;
@@ -2669,10 +3070,28 @@ async function loadSceneDocument(documentData: SceneDocument) {
   for (const rack of racks.value) {
     scene.add(rack.group);
     clampRackToRoom(rack);
+    if (rack.kind === 'fire-smoke' && rack.fireSmoke) createFireSmokeEffect(rack);
+  }
+  for (const legacyRack of documentData.racks.filter((item) => item.kind !== 'fire-smoke' && item.fireSmoke)) {
+    const sourceRack = racks.value.find((item) => item.id === legacyRack.id);
+    if (!sourceRack || !legacyRack.fireSmoke) continue;
+    sourceRack.group.updateWorldMatrix(true, false);
+    const position = sourceRack.group.localToWorld(new THREE.Vector3(0, sourceRack.height * 0.28, 0));
+    const index = racks.value.filter((item) => item.kind === 'fire-smoke').length + 1;
+    const effect = createFireSmokeRack(
+      createId(),
+      `火焰与烟雾 ${String(index).padStart(2, '0')}`,
+      position,
+      legacyRack.fireSmoke,
+    );
+    scene.add(effect.group);
+    racks.value.push(effect);
+    clampRackToRoom(effect);
+    createFireSmokeEffect(effect);
   }
   for (const annotation of documentData.annotations) {
     const rack = racks.value.find((item) => item.id === annotation.itemId);
-    if (rack) attachAnnotation(rack, annotation.id, annotation.title, annotation.description);
+    if (rack) attachAnnotation(rack, annotation.id, annotation.title, annotation.description, annotation);
   }
   restoreInitialCameraView();
   selectedId.value = null;
@@ -2711,7 +3130,9 @@ async function loadFreeDeviceModel() {
 function disposeGroup(group: THREE.Object3D) {
   if (group.userData.sharedAssets) return;
   group.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments) {
+    if (child instanceof THREE.Sprite) {
+      child.material.dispose();
+    } else if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments) {
       child.geometry.dispose();
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const material of materials) material.dispose();
@@ -2952,8 +3373,12 @@ function resizeViewport() {
   labelRenderer.setSize(width, height);
 }
 
-function animate() {
+function animate(timestamp = performance.now()) {
   animationFrame = window.requestAnimationFrame(animate);
+  const delta = lastAnimationTimestamp === 0 ? 0 : Math.min((timestamp - lastAnimationTimestamp) / 1000, 0.05);
+  lastAnimationTimestamp = timestamp;
+  const time = timestamp / 1000;
+  for (const effect of fireSmokeEffects.values()) updateFireSmokeEffect(effect, delta, time);
   controls.update();
   selectionOutline?.update();
   renderer.render(scene, camera);
@@ -3086,6 +3511,11 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (animationFrame) window.cancelAnimationFrame(animationFrame);
+  clearFireSmokeEffects();
+  fireParticleTexture?.dispose();
+  smokeParticleTexture?.dispose();
+  fireParticleTexture = null;
+  smokeParticleTexture = null;
   if (historyCaptureTimer !== null) window.clearTimeout(historyCaptureTimer);
   window.removeEventListener('keydown', handleHistoryKeydown);
   resizeObserver?.disconnect();
@@ -3411,6 +3841,11 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .lighting-help { margin: -2px 0 0; color: #71838a; font-size: 8px; line-height: 1.5; }
 .camera-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .camera-view-actions .annotation-add { padding: 0 3px; font-size: 8px; white-space: nowrap; }
+.fire-smoke-panel > .section-title { margin-bottom: 10px; }
+.fire-smoke-help { margin: -4px 0 9px; color: #71838a; font-size: 8px; line-height: 1.5; }
+.fire-smoke-panel .fire-smoke-intensity { margin-top: 10px; }
+.remove-fire-smoke { margin-top: 10px; padding: 0; color: #b88d82; border: 0; background: transparent; font-size: 8px; cursor: pointer; }
+.remove-fire-smoke:hover { color: #e19488; }
 .annotation-section { padding: 17px 18px 16px; }
 .annotation-heading { display: flex; align-items: center; justify-content: space-between; }
 .annotation-heading .section-title { margin-bottom: 12px; }
@@ -3435,18 +3870,27 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .annotation-copy small { color: #74838a; font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .annotation-row button { color: #809097; border: 0; background: transparent; font-size: 15px; cursor: pointer; }
 .annotation-row button:hover { color: #e19488; }
+.annotation-settings { margin-top: 10px; padding: 10px; border: 1px solid rgba(112,193,188,.18); background: rgba(9,15,19,.3); border-radius: 3px; }
+.annotation-settings-title { margin-bottom: 8px; color: #a9c5c6; font-size: 9px; }
+.annotation-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.annotation-settings-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; color: #778990; font-size: 8px; }
+.annotation-settings-grid input { width: 100%; min-width: 0; height: 27px; padding: 0 6px; color: #d7e2e3; background: #11191f; border: 1px solid rgba(172,199,211,.12); border-radius: 3px; outline: 0; font-size: 9px; }
+.annotation-settings-grid input:focus { border-color: rgba(113,197,192,.5); }
+.annotation-settings-title.offset-title { margin-top: 12px; }
+.annotation-settings-grid.offset-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.annotation-settings .annotation-tip { margin-bottom: 0; }
 .annotation-empty { display: flex; gap: 8px; align-items: flex-start; margin-top: 11px; padding: 9px; background: rgba(255,255,255,.02); border-radius: 3px; }
 .annotation-empty > span { color: #6eaaa8; font-size: 13px; }
 .annotation-empty p { margin: 0; color: #77858a; font-size: 8px; line-height: 1.6; }
 .right-footer { margin-top: auto; padding: 12px 18px; border-top: 1px solid var(--line); color: #71828a; font-size: 8px; letter-spacing: .4px; }
 .right-footer > span { color: #78c5bf; margin-right: 5px; }.right-footer i { float: right; font-style: normal; color: #596a71; }
 
-.scene-annotation { display: flex; align-items: flex-start; gap: 6px; max-width: 190px; transform: translate(-50%, -100%); background: rgba(17, 29, 34, .94); color: #dce8e7; padding: 6px 9px 6px 7px; border: 1px solid rgba(121,205,198,.55); border-radius: 4px; box-shadow: 0 5px 17px rgba(0,0,0,.28); white-space: normal; }
+.scene-annotation { position: relative; display: flex; align-items: flex-start; gap: 6px; box-sizing: border-box; min-width: 20px; max-width: none; overflow: visible; transform: translate(-50%, -100%); background: rgba(17, 29, 34, .94); color: #dce8e7; padding: 6px 9px 6px 7px; border: 1px solid rgba(121,205,198,.55); border-radius: 4px; box-shadow: 0 5px 17px rgba(0,0,0,.28); white-space: normal; }
 .scene-annotation::after { content: ""; position: absolute; bottom: -5px; left: 50%; width: 8px; height: 8px; background: #17272b; border-right: 1px solid rgba(121,205,198,.55); border-bottom: 1px solid rgba(121,205,198,.55); transform: translateX(-50%) rotate(45deg); }
-.scene-annotation-pin { color: #80d5ca; font-size: 12px; line-height: 1.1; }
-.scene-annotation-content { display: flex; flex-direction: column; gap: 3px; }
-.scene-annotation-content strong { font-size: 9px; font-weight: 600; }
-.scene-annotation-content small { max-width: 160px; color: #a8b8b8; font-size: 8px; line-height: 1.4; }
+.scene-annotation-pin { color: #80d5ca; font-size: 6px; line-height: 1.1; }
+.scene-annotation-content { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.scene-annotation-content strong { font-size: 8px; font-weight: 600; }
+.scene-annotation-content small { max-width: 100%; color: #a8b8b8; font-size: 8px; line-height: 1.4; }
 
 @media (max-width: 1150px) {
   .workspace { grid-template-columns: 225px minmax(390px, 1fr) 265px; }
